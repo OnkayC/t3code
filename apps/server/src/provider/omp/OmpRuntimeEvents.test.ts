@@ -321,6 +321,26 @@ describe("OmpRuntimeEvents", () => {
       },
     });
     expect(JSON.stringify(event)).not.toContain("/private/tmp/omp/plans");
+    if (!event) throw new Error("expected plan review request");
+    const [activity] = runtimeEventToActivities(event);
+    expect(activity).toMatchObject({
+      kind: "plan.review.requested",
+      payload: {
+        requestId: "review-1",
+        title: "Implement native OMP",
+        planArtifactId: "native-plan-1",
+      },
+    });
+    const [resolvedEvent] = makeNormalizer().map({
+      type: "plan_review_resolved",
+      id: "review-1",
+      outcome: "cancelled",
+    });
+    if (!resolvedEvent) throw new Error("expected plan review resolution");
+    expect(runtimeEventToActivities(resolvedEvent)[0]).toMatchObject({
+      kind: "plan.review.resolved",
+      payload: { requestId: "review-1", outcome: "cancelled" },
+    });
   });
 
   it("keeps oversized planMarkdown as a bounded string (not a truncated object)", () => {
@@ -368,6 +388,16 @@ describe("OmpRuntimeEvents", () => {
     });
     expect(queued).toMatchObject({
       type: "turn.queued",
+      turnId: queuedTurnId,
+      payload: {
+        deliveryMode: "follow-up",
+        optionFingerprint: "sha256:fixture",
+        queuePosition: 1,
+      },
+    });
+    if (!queued) throw new Error("expected queued turn");
+    expect(runtimeEventToActivities(queued)[0]).toMatchObject({
+      kind: "turn.queued",
       turnId: queuedTurnId,
       payload: {
         deliveryMode: "follow-up",

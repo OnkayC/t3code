@@ -14,6 +14,7 @@ import {
   OrchestrationProposedPlanId,
   OrchestrationCheckpointFile,
   OrchestrationCheckpointStatus,
+  ProviderPlanWorkflow,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -39,6 +40,7 @@ export const ProjectionTurn = Schema.Struct({
   pendingMessageId: Schema.NullOr(MessageId),
   sourceProposedPlanThreadId: Schema.NullOr(ThreadId),
   sourceProposedPlanId: Schema.NullOr(OrchestrationProposedPlanId),
+  workflow: Schema.NullOr(ProviderPlanWorkflow),
   assistantMessageId: Schema.NullOr(MessageId),
   state: ProjectionTurnState,
   requestedAt: IsoDateTime,
@@ -57,6 +59,7 @@ export const ProjectionTurnById = Schema.Struct({
   pendingMessageId: Schema.NullOr(MessageId),
   sourceProposedPlanThreadId: Schema.NullOr(ThreadId),
   sourceProposedPlanId: Schema.NullOr(OrchestrationProposedPlanId),
+  workflow: Schema.NullOr(ProviderPlanWorkflow),
   assistantMessageId: Schema.NullOr(MessageId),
   state: ProjectionTurnState,
   requestedAt: IsoDateTime,
@@ -74,6 +77,7 @@ export const ProjectionPendingTurnStart = Schema.Struct({
   messageId: MessageId,
   sourceProposedPlanThreadId: Schema.NullOr(ThreadId),
   sourceProposedPlanId: Schema.NullOr(OrchestrationProposedPlanId),
+  workflow: Schema.NullOr(ProviderPlanWorkflow),
   requestedAt: IsoDateTime,
 });
 export type ProjectionPendingTurnStart = typeof ProjectionPendingTurnStart.Type;
@@ -93,6 +97,20 @@ export const GetProjectionPendingTurnStartInput = Schema.Struct({
   threadId: ThreadId,
 });
 export type GetProjectionPendingTurnStartInput = typeof GetProjectionPendingTurnStartInput.Type;
+
+export const DeleteProjectionPendingTurnStartInput = Schema.Struct({
+  threadId: ThreadId,
+  messageId: MessageId,
+});
+export type DeleteProjectionPendingTurnStartInput =
+  typeof DeleteProjectionPendingTurnStartInput.Type;
+export const SettleProjectionPendingTurnInput = Schema.Struct({
+  threadId: ThreadId,
+  turnId: TurnId,
+  state: Schema.Literals(["interrupted", "completed", "error"]),
+  completedAt: IsoDateTime,
+});
+export type SettleProjectionPendingTurnInput = typeof SettleProjectionPendingTurnInput.Type;
 
 export const DeleteProjectionTurnsByThreadInput = Schema.Struct({
   threadId: ThreadId,
@@ -115,24 +133,37 @@ export interface ProjectionTurnRepositoryShape {
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 
   /**
-   * Replaces any existing pending-start placeholder rows for a thread with exactly one latest pending-start row.
+   * Appends a pending-start placeholder in request order.
    */
-  readonly replacePendingTurnStart: (
+  readonly insertPendingTurnStart: (
     row: ProjectionPendingTurnStart,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 
   /**
-   * Returns the newest pending-start placeholder for a thread; this is expected to be at most one row after replacement writes.
+   * Returns the oldest uncorrelated pending-start placeholder for a thread.
    */
   readonly getPendingTurnStartByThreadId: (
     input: GetProjectionPendingTurnStartInput,
   ) => Effect.Effect<Option.Option<ProjectionPendingTurnStart>, ProjectionRepositoryError>;
 
   /**
-   * Deletes only pending-start placeholder rows (`turnId = null`) for a thread and leaves concrete turn rows untouched.
+   * Deletes all pending correlated and uncorrelated turns for a terminal thread session.
    */
-  readonly deletePendingTurnStartByThreadId: (
+  readonly deletePendingTurnsByThreadId: (
     input: GetProjectionPendingTurnStartInput,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /**
+   * Deletes one correlated pending-start placeholder and leaves later requests queued.
+   */
+  readonly deletePendingTurnStart: (
+    input: DeleteProjectionPendingTurnStartInput,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
+  /**
+   * Idempotently settles one correlated queued turn without mutating the active session turn.
+   */
+  readonly settlePendingTurnByTurnId: (
+    input: SettleProjectionPendingTurnInput,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 
   /**

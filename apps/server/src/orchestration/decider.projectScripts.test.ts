@@ -205,7 +205,7 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
     }),
   );
 
-  it.effect("emits user message and turn-start-requested events for thread.turn.start", () =>
+  it.effect("prefers requested turn mode and otherwise uses the projected thread mode", () =>
     Effect.gen(function* () {
       const now = "2026-01-01T00:00:00.000Z";
       const initial = createEmptyReadModel(now);
@@ -258,6 +258,23 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
         },
       });
 
+      const acceptedModeIntent = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.interaction-mode.set",
+          commandId: CommandId.make("cmd-interaction-mode-set-before-turn"),
+          threadId: ThreadId.make("thread-1"),
+          interactionMode: "plan",
+          createdAt: now,
+        },
+        readModel,
+      });
+      expect(
+        Array.isArray(acceptedModeIntent) ? acceptedModeIntent[0] : acceptedModeIntent,
+      ).toMatchObject({
+        type: "thread.interaction-mode-change-requested",
+        payload: { interactionMode: "plan" },
+      });
+
       const result = yield* decideOrchestrationCommand({
         command: {
           type: "thread.turn.start",
@@ -273,7 +290,8 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
             { id: "reasoningEffort", value: "high" },
             { id: "fastMode", value: true },
           ]),
-          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          interactionMode: "plan",
+          workflow: "iterative",
           runtimeMode: "approval-required",
           createdAt: now,
         },
@@ -298,7 +316,48 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
           { id: "fastMode", value: true },
         ]),
         runtimeMode: "approval-required",
+        interactionMode: "plan",
+        workflow: "iterative",
       });
+
+      const projectedPlanReadModel = yield* projectEvent(readModel, {
+        sequence: 3,
+        eventId: asEventId("evt-interaction-mode-set"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.interaction-mode-set",
+        occurredAt: now,
+        commandId: CommandId.make("cmd-interaction-mode-set"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-interaction-mode-set"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          interactionMode: "plan",
+          updatedAt: now,
+        },
+      });
+      const fallbackResult = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-projected-mode"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("message-user-2"),
+            role: "user",
+            text: "continue",
+            attachments: [],
+          },
+          runtimeMode: "approval-required",
+          createdAt: now,
+        },
+        readModel: projectedPlanReadModel,
+      });
+      const fallbackEvents = Array.isArray(fallbackResult) ? fallbackResult : [fallbackResult];
+      const fallbackTurnStartEvent = fallbackEvents.find(
+        (event) => event.type === "thread.turn-start-requested",
+      );
+      expect(fallbackTurnStartEvent?.payload).toMatchObject({ interactionMode: "plan" });
     }),
   );
 
@@ -380,7 +439,7 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
     }),
   );
 
-  it.effect("emits thread.interaction-mode-set from thread.interaction-mode.set", () =>
+  it.effect("separates requested and authoritative interaction-mode events", () =>
     Effect.gen(function* () {
       const now = "2026-01-01T00:00:00.000Z";
       const initial = createEmptyReadModel(now);
@@ -439,6 +498,7 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
           commandId: CommandId.make("cmd-interaction-mode-set"),
           threadId: ThreadId.make("thread-1"),
           interactionMode: "plan",
+          workflow: "parallel",
           createdAt: now,
         },
         readModel,
@@ -446,13 +506,43 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
 
       const singleResult = Array.isArray(result) ? null : result;
       if (singleResult === null) {
-        throw new Error("Expected a single interaction-mode-set event.");
+        throw new Error("Expected a single interaction-mode change request event.");
       }
       expect(singleResult).toMatchObject({
-        type: "thread.interaction-mode-set",
+        type: "thread.interaction-mode-change-requested",
         payload: {
           threadId: ThreadId.make("thread-1"),
           interactionMode: "plan",
+          workflow: "parallel",
+          requestedAt: expect.any(String),
+        },
+      });
+
+      const applied = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.interaction-mode.apply",
+          commandId: CommandId.make("cmd-interaction-mode-apply"),
+          threadId: ThreadId.make("thread-1"),
+          interactionMode: "plan",
+          workflow: "parallel",
+          requestCommandId: CommandId.make("cmd-interaction-mode-set"),
+          causationEventId: asEventId("evt-interaction-mode-requested"),
+          createdAt: now,
+        },
+        readModel,
+      });
+      const singleApplied = Array.isArray(applied) ? null : applied;
+      if (singleApplied === null) {
+        throw new Error("Expected a single authoritative interaction-mode-set event.");
+      }
+      expect(singleApplied).toMatchObject({
+        type: "thread.interaction-mode-set",
+        causationEventId: asEventId("evt-interaction-mode-requested"),
+        correlationId: CommandId.make("cmd-interaction-mode-set"),
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          interactionMode: "plan",
+          workflow: "parallel",
         },
       });
     }),

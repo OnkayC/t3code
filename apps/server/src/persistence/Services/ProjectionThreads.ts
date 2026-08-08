@@ -13,6 +13,7 @@ import {
   NonNegativeInt,
   ProjectId,
   ProviderInteractionMode,
+  ProviderPlanWorkflow,
   RuntimeMode,
   ThreadId,
   TurnId,
@@ -31,6 +32,7 @@ export const ProjectionThread = Schema.Struct({
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
+  workflow: Schema.optional(Schema.NullOr(ProviderPlanWorkflow)),
   branch: Schema.NullOr(Schema.String),
   worktreePath: Schema.NullOr(Schema.String),
   latestTurnId: Schema.NullOr(TurnId),
@@ -48,6 +50,7 @@ export const ProjectionThread = Schema.Struct({
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
   pendingApprovalCount: NonNegativeInt,
   pendingUserInputCount: NonNegativeInt,
+  pendingPlanReviewCount: NonNegativeInt,
   hasActionableProposedPlan: NonNegativeInt,
   deletedAt: Schema.NullOr(IsoDateTime),
 });

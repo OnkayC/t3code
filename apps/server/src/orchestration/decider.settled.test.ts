@@ -188,6 +188,58 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
         ]),
       }).pipe(Effect.flip);
       expect(inputError._tag).toBe("OrchestrationCommandInvariantError");
+
+      // Open plan review: also rejected until resolved.
+      const planError = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.settle",
+          commandId: CommandId.make("cmd-settle-pending-plan"),
+          threadId: ThreadId.make("thread-1"),
+        },
+        readModel: makeReadModel(null, null, null, [
+          requestActivity("plan.review.requested", "req-plan", NOW),
+        ]),
+      }).pipe(Effect.flip);
+      expect(planError._tag).toBe("OrchestrationCommandInvariantError");
+
+      const planSettled = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.settle",
+          commandId: CommandId.make("cmd-settle-resolved-plan"),
+          threadId: ThreadId.make("thread-1"),
+        },
+        readModel: makeReadModel(null, null, null, [
+          requestActivity("plan.review.requested", "req-plan", NOW),
+          requestActivity("plan.review.resolved", "req-plan", NOW),
+        ]),
+      });
+      const planSettledEvents = Array.isArray(planSettled) ? planSettled : [planSettled];
+      expect(planSettledEvents[0]?.type).toBe("thread.settled");
+
+      // Transient plan-review respond failure keeps the review open for retry.
+      const planRetryOpen = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.settle",
+          commandId: CommandId.make("cmd-settle-plan-retry"),
+          threadId: ThreadId.make("thread-1"),
+        },
+        readModel: makeReadModel(null, null, null, [
+          requestActivity("plan.review.requested", "req-plan-retry", NOW),
+          {
+            id: EventId.make("activity-req-plan-retry-failed"),
+            tone: "error" as const,
+            kind: "provider.plan-review.respond.failed",
+            summary: "failed",
+            payload: {
+              requestId: "req-plan-retry",
+              detail: "provider connection reset",
+            },
+            turnId: null,
+            createdAt: NOW,
+          } as OrchestrationThread["activities"][number],
+        ]),
+      }).pipe(Effect.flip);
+      expect(planRetryOpen._tag).toBe("OrchestrationCommandInvariantError");
     }),
   );
 
@@ -492,6 +544,32 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
       });
       const approvalEvents = Array.isArray(approvalResult) ? approvalResult : [approvalResult];
       expect(approvalEvents.map((event) => event.type)).toEqual([
+        "thread.unsettled",
+        "thread.activity-appended",
+      ]);
+
+      const planReviewResult = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.activity.append",
+          commandId: CommandId.make("cmd-activity-plan-review"),
+          threadId: ThreadId.make("thread-1"),
+          activity: {
+            id: EventId.make("activity-plan-review"),
+            tone: "info",
+            kind: "plan.review.requested",
+            summary: "Plan review requested",
+            payload: { requestId: "plan-review-1" },
+            turnId: null,
+            createdAt: NOW,
+          },
+          createdAt: NOW,
+        },
+        readModel: makeReadModel("settled"),
+      });
+      const planReviewEvents = Array.isArray(planReviewResult)
+        ? planReviewResult
+        : [planReviewResult];
+      expect(planReviewEvents.map((event) => event.type)).toEqual([
         "thread.unsettled",
         "thread.activity-appended",
       ]);

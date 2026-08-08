@@ -1,4 +1,5 @@
 import {
+  ApprovalRequestId,
   CheckpointRef,
   CommandId,
   CorrelationId,
@@ -240,6 +241,288 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 });
+
+it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-thread-workflow-")))(
+  "OrchestrationProjectionPipeline",
+  (it) => {
+    it.effect("persists the selected plan workflow in the thread projection", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const createdAt = "2026-01-01T00:00:00.000Z";
+        const selectedAt = "2026-01-01T00:00:05.000Z";
+        const toggledAt = "2026-01-01T00:00:10.000Z";
+        const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+          eventStore
+            .append(event)
+            .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+        yield* appendAndProject({
+          type: "thread.created",
+          eventId: EventId.make("evt-workflow-1"),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-workflow"),
+          occurredAt: createdAt,
+          commandId: CommandId.make("cmd-workflow-1"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-workflow-1"),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-workflow"),
+            projectId: ProjectId.make("project-workflow"),
+            title: "Workflow thread",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("omp"),
+              model: "openai/gpt-5.3-codex",
+            },
+            runtimeMode: "full-access",
+            interactionMode: "plan",
+            branch: null,
+            worktreePath: null,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        });
+        yield* appendAndProject({
+          type: "thread.interaction-mode-set",
+          eventId: EventId.make("evt-workflow-2"),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-workflow"),
+          occurredAt: selectedAt,
+          commandId: CommandId.make("cmd-workflow-2"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-workflow-2"),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-workflow"),
+            interactionMode: "plan",
+            workflow: "parallel",
+            updatedAt: selectedAt,
+          },
+        });
+        yield* appendAndProject({
+          type: "thread.interaction-mode-set",
+          eventId: EventId.make("evt-workflow-3"),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-workflow"),
+          occurredAt: toggledAt,
+          commandId: CommandId.make("cmd-workflow-3"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-workflow-3"),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-workflow"),
+            interactionMode: "default",
+            updatedAt: toggledAt,
+          },
+        });
+
+        const rows = yield* sql<{
+          readonly interactionMode: string;
+          readonly workflow: string | null;
+        }>`
+        SELECT
+          interaction_mode AS "interactionMode",
+          workflow
+        FROM projection_threads
+        WHERE thread_id = 'thread-workflow'
+      `;
+        assert.deepEqual(rows, [{ interactionMode: "default", workflow: "parallel" }]);
+      }),
+    );
+
+    it.effect("persists bootstrap workflow from thread.created", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const createdAt = "2026-01-01T00:00:00.000Z";
+
+        const saved = yield* eventStore.append({
+          type: "thread.created",
+          eventId: EventId.make("evt-bootstrap-workflow"),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-bootstrap-workflow"),
+          occurredAt: createdAt,
+          commandId: CommandId.make("cmd-bootstrap-workflow"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-bootstrap-workflow"),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-bootstrap-workflow"),
+            projectId: ProjectId.make("project-workflow"),
+            title: "Bootstrap workflow thread",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("omp"),
+              model: "openai/gpt-5.3-codex",
+            },
+            runtimeMode: "full-access",
+            interactionMode: "plan",
+            workflow: "iterative",
+            branch: null,
+            worktreePath: null,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        });
+        yield* projectionPipeline.projectEvent(saved);
+
+        const rows = yield* sql<{
+          readonly interactionMode: string;
+          readonly workflow: string | null;
+        }>`
+        SELECT
+          interaction_mode AS "interactionMode",
+          workflow
+        FROM projection_threads
+        WHERE thread_id = 'thread-bootstrap-workflow'
+      `;
+        assert.deepEqual(rows, [{ interactionMode: "plan", workflow: "iterative" }]);
+      }),
+    );
+  },
+);
+
+it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-legacy-user-input-")))(
+  "OrchestrationProjectionPipeline",
+  (it) => {
+    it.effect("bootstraps across legacy and canonical user-input response events", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const projectId = ProjectId.make("project-user-input-replay");
+        const threadId = ThreadId.make("thread-user-input-replay");
+        const createdAt = "2026-01-01T00:00:00.000Z";
+        const legacyOccurredAt = "2026-01-01T00:00:01.000Z";
+        const currentOccurredAt = "2026-01-01T00:00:02.000Z";
+        const legacyPayload = {
+          threadId,
+          requestId: ApprovalRequestId.make("request-user-input-replay-legacy"),
+          answers: { framework: "React" },
+          createdAt: legacyOccurredAt,
+        };
+        // @effect-diagnostics-next-line preferSchemaOverJson:off - fixed legacy persistence fixture.
+        const legacyPayloadJson = JSON.stringify(legacyPayload);
+
+        yield* eventStore.append({
+          type: "project.created",
+          eventId: EventId.make("evt-project-user-input-replay"),
+          aggregateKind: "project",
+          aggregateId: projectId,
+          occurredAt: createdAt,
+          commandId: CommandId.make("cmd-project-user-input-replay"),
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          payload: {
+            projectId,
+            title: "User Input Replay Project",
+            workspaceRoot: "/tmp/project-user-input-replay",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt,
+            updatedAt: createdAt,
+          },
+        });
+
+        yield* eventStore.append({
+          type: "thread.created",
+          eventId: EventId.make("evt-thread-user-input-replay"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: createdAt,
+          commandId: CommandId.make("cmd-thread-user-input-replay"),
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          payload: {
+            threadId,
+            projectId,
+            title: "User Input Replay Thread",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-5-codex",
+            },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        });
+
+        yield* sql`
+          INSERT INTO orchestration_events (
+            event_id,
+            aggregate_kind,
+            stream_id,
+            stream_version,
+            event_type,
+            occurred_at,
+            command_id,
+            causation_event_id,
+            correlation_id,
+            actor_kind,
+            payload_json,
+            metadata_json
+          )
+          VALUES (
+            ${EventId.make("evt-user-input-replay-legacy")},
+            ${"thread"},
+            ${threadId},
+            ${1},
+            ${"thread.user-input-response-requested"},
+            ${legacyOccurredAt},
+            ${CommandId.make("cmd-user-input-replay-legacy")},
+            ${null},
+            ${null},
+            ${"client"},
+            ${legacyPayloadJson},
+            ${"{}"}
+          )
+        `;
+
+        yield* eventStore.append({
+          type: "thread.user-input-response-requested",
+          eventId: EventId.make("evt-user-input-replay-current"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: currentOccurredAt,
+          commandId: CommandId.make("cmd-user-input-replay-current"),
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          payload: {
+            threadId,
+            requestId: ApprovalRequestId.make("request-user-input-replay-current"),
+            response: { kind: "chat" },
+            createdAt: currentOccurredAt,
+          },
+        });
+
+        yield* projectionPipeline.bootstrap;
+
+        const threadRows = yield* sql<{ readonly updatedAt: string }>`
+          SELECT updated_at AS "updatedAt"
+          FROM projection_threads
+          WHERE thread_id = ${threadId}
+        `;
+        assert.deepEqual(threadRows, [{ updatedAt: currentOccurredAt }]);
+
+        const stateRows = yield* sql<{ readonly lastAppliedSequence: number }>`
+          SELECT last_applied_sequence AS "lastAppliedSequence"
+          FROM projection_state
+        `;
+        assert.equal(stateRows.length, Object.keys(ORCHESTRATION_PROJECTOR_NAMES).length);
+        for (const row of stateRows) {
+          assert.equal(row.lastAppliedSequence, 4);
+        }
+      }),
+    );
+  },
+);
 
 it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-base-")))(
   "OrchestrationProjectionPipeline",
@@ -2086,6 +2369,256 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 
+  it.effect("orders same-timestamp plan review resolution after the request", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+      yield* appendAndProject({
+        type: "project.created",
+        eventId: EventId.make("evt-plan-review-order-1"),
+        aggregateKind: "project",
+        aggregateId: ProjectId.make("project-plan-review-order"),
+        occurredAt: "2026-02-26T12:40:00.000Z",
+        commandId: CommandId.make("cmd-plan-review-order-1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-plan-review-order-1"),
+        metadata: {},
+        payload: {
+          projectId: ProjectId.make("project-plan-review-order"),
+          title: "Project Plan Review Order",
+          workspaceRoot: "/tmp/project-plan-review-order",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: "2026-02-26T12:40:00.000Z",
+          updatedAt: "2026-02-26T12:40:00.000Z",
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-plan-review-order-2"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-plan-review-order"),
+        occurredAt: "2026-02-26T12:40:01.000Z",
+        commandId: CommandId.make("cmd-plan-review-order-2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-plan-review-order-2"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-plan-review-order"),
+          projectId: ProjectId.make("project-plan-review-order"),
+          title: "Thread Plan Review Order",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("omp"),
+            model: "fixture/model",
+          },
+          runtimeMode: "full-access",
+          interactionMode: "plan",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-02-26T12:40:01.000Z",
+          updatedAt: "2026-02-26T12:40:01.000Z",
+        },
+      });
+
+      const sameCreatedAt = "2026-02-26T12:40:02.000Z";
+      // Resolve activityId sorts before request when only UUID ordering is used.
+      yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-plan-review-order-3"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-plan-review-order"),
+        occurredAt: sameCreatedAt,
+        commandId: CommandId.make("cmd-plan-review-order-3"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-plan-review-order-3"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-plan-review-order"),
+          activity: {
+            id: EventId.make("activity-plan-review-resolved-a"),
+            tone: "info",
+            kind: "plan.review.resolved",
+            summary: "Plan review cancelled",
+            payload: {
+              requestId: "plan-review-request-1",
+              outcome: "cancelled",
+            },
+            turnId: null,
+            createdAt: sameCreatedAt,
+          },
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-plan-review-order-4"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-plan-review-order"),
+        occurredAt: sameCreatedAt,
+        commandId: CommandId.make("cmd-plan-review-order-4"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-plan-review-order-4"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-plan-review-order"),
+          activity: {
+            id: EventId.make("activity-plan-review-requested-z"),
+            tone: "info",
+            kind: "plan.review.requested",
+            summary: "Plan review requested",
+            payload: {
+              requestId: "plan-review-request-1",
+              title: "Proposed plan",
+            },
+            turnId: null,
+            createdAt: sameCreatedAt,
+          },
+        },
+      });
+
+      const threadRows = yield* sql<{
+        readonly pendingPlanReviewCount: number;
+      }>`
+        SELECT pending_plan_review_count AS "pendingPlanReviewCount"
+        FROM projection_threads
+        WHERE thread_id = 'thread-plan-review-order'
+      `;
+      assert.deepEqual(threadRows, [{ pendingPlanReviewCount: 0 }]);
+    }),
+  );
+
+  it.effect("orders same-timestamp user-input resolution after the request", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+      yield* appendAndProject({
+        type: "project.created",
+        eventId: EventId.make("evt-user-input-order-1"),
+        aggregateKind: "project",
+        aggregateId: ProjectId.make("project-user-input-order"),
+        occurredAt: "2026-02-26T12:41:00.000Z",
+        commandId: CommandId.make("cmd-user-input-order-1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-user-input-order-1"),
+        metadata: {},
+        payload: {
+          projectId: ProjectId.make("project-user-input-order"),
+          title: "Project User Input Order",
+          workspaceRoot: "/tmp/project-user-input-order",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: "2026-02-26T12:41:00.000Z",
+          updatedAt: "2026-02-26T12:41:00.000Z",
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-user-input-order-2"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-user-input-order"),
+        occurredAt: "2026-02-26T12:41:01.000Z",
+        commandId: CommandId.make("cmd-user-input-order-2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-user-input-order-2"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-user-input-order"),
+          projectId: ProjectId.make("project-user-input-order"),
+          title: "Thread User Input Order",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("omp"),
+            model: "fixture/model",
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-02-26T12:41:01.000Z",
+          updatedAt: "2026-02-26T12:41:01.000Z",
+        },
+      });
+
+      const sameCreatedAt = "2026-02-26T12:41:02.000Z";
+      // Resolve activityId sorts before request when only UUID ordering is used.
+      yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-user-input-order-3"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-user-input-order"),
+        occurredAt: sameCreatedAt,
+        commandId: CommandId.make("cmd-user-input-order-3"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-user-input-order-3"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-user-input-order"),
+          activity: {
+            id: EventId.make("activity-user-input-resolved-a"),
+            tone: "info",
+            kind: "user-input.resolved",
+            summary: "User input submitted",
+            payload: {
+              requestId: "user-input-request-1",
+              outcome: "submitted",
+            },
+            turnId: null,
+            createdAt: sameCreatedAt,
+          },
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-user-input-order-4"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-user-input-order"),
+        occurredAt: sameCreatedAt,
+        commandId: CommandId.make("cmd-user-input-order-4"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-user-input-order-4"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-user-input-order"),
+          activity: {
+            id: EventId.make("activity-user-input-requested-z"),
+            tone: "info",
+            kind: "user-input.requested",
+            summary: "User input requested",
+            payload: {
+              requestId: "user-input-request-1",
+              questions: [],
+            },
+            turnId: null,
+            createdAt: sameCreatedAt,
+          },
+        },
+      });
+
+      const threadRows = yield* sql<{
+        readonly pendingUserInputCount: number;
+      }>`
+        SELECT pending_user_input_count AS "pendingUserInputCount"
+        FROM projection_threads
+        WHERE thread_id = 'thread-user-input-order'
+      `;
+      assert.deepEqual(threadRows, [{ pendingUserInputCount: 0 }]);
+    }),
+  );
+
   it.effect("ignores non-stale provider approval response failures", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;
@@ -2536,6 +3069,177 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-pending-turn-terminal-test-
             AND state = 'pending'
         `;
         assert.deepEqual(pendingRows, []);
+      }),
+    );
+    it.effect("correlates queued turns with their pending request metadata", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = ThreadId.make("thread-queued-follow-up");
+        const requestedAt = "2026-02-26T14:30:00.000Z";
+
+        yield* eventStore.append({
+          type: "thread.turn-start-requested",
+          eventId: EventId.make("evt-queued-request"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: requestedAt,
+          commandId: CommandId.make("cmd-queued-request"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-queued-request"),
+          metadata: {},
+          payload: {
+            threadId,
+            messageId: MessageId.make("message-queued-follow-up"),
+            runtimeMode: "approval-required",
+            interactionMode: "plan",
+            workflow: "parallel",
+            deliveryMode: "follow-up",
+            createdAt: requestedAt,
+            sourceProposedPlan: {
+              threadId: ThreadId.make("thread-source-plan"),
+              planId: "plan-source",
+            },
+          },
+        });
+        yield* eventStore.append({
+          type: "thread.activity-appended",
+          eventId: EventId.make("evt-queued-activity"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: requestedAt,
+          commandId: CommandId.make("cmd-queued-activity"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-queued-activity"),
+          metadata: {},
+          payload: {
+            threadId,
+            activity: {
+              id: EventId.make("activity-queued-follow-up"),
+              tone: "info",
+              kind: "turn.queued",
+              summary: "Turn queued",
+              payload: { deliveryMode: "follow-up", queuePosition: 1 },
+              turnId: TurnId.make("turn-queued-follow-up"),
+              createdAt: requestedAt,
+            },
+          },
+        });
+        yield* eventStore.append({
+          type: "thread.activity-appended",
+          eventId: EventId.make("evt-queued-aborted"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-02-26T14:30:01.000Z",
+          commandId: CommandId.make("cmd-queued-aborted"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-queued-aborted"),
+          metadata: {},
+          payload: {
+            threadId,
+            activity: {
+              id: EventId.make("activity-queued-aborted"),
+              tone: "info",
+              kind: "turn.aborted",
+              summary: "Turn cancelled",
+              payload: { reason: "Cancelled before promotion." },
+              turnId: TurnId.make("turn-queued-follow-up"),
+              createdAt: "2026-02-26T14:30:01.000Z",
+            },
+          },
+        });
+
+        yield* projectionPipeline.bootstrap;
+        const rows = yield* sql<{
+          readonly turnId: string | null;
+          readonly pendingMessageId: string | null;
+          readonly workflow: string | null;
+          readonly sourceProposedPlanThreadId: string | null;
+          readonly sourceProposedPlanId: string | null;
+          readonly state: string;
+        }>`
+          SELECT
+            turn_id AS "turnId",
+            pending_message_id AS "pendingMessageId",
+            workflow,
+            source_proposed_plan_thread_id AS "sourceProposedPlanThreadId",
+            source_proposed_plan_id AS "sourceProposedPlanId",
+            state
+          FROM projection_turns
+          WHERE thread_id = ${threadId}
+        `;
+        assert.deepEqual(rows, [
+          {
+            turnId: "turn-queued-follow-up",
+            pendingMessageId: "message-queued-follow-up",
+            workflow: "parallel",
+            sourceProposedPlanThreadId: "thread-source-plan",
+            sourceProposedPlanId: "plan-source",
+            state: "interrupted",
+          },
+        ]);
+      }),
+    );
+
+    it.effect("clears uncorrelated steer placeholders when the session becomes ready", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = ThreadId.make("thread-finished-steer");
+        const requestedAt = "2026-02-26T14:40:00.000Z";
+
+        yield* eventStore.append({
+          type: "thread.turn-start-requested",
+          eventId: EventId.make("evt-steer-request"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: requestedAt,
+          commandId: CommandId.make("cmd-steer-request"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-steer-request"),
+          metadata: {},
+          payload: {
+            threadId,
+            messageId: MessageId.make("message-finished-steer"),
+            runtimeMode: "approval-required",
+            deliveryMode: "steer",
+            createdAt: requestedAt,
+          },
+        });
+        yield* eventStore.append({
+          type: "thread.session-set",
+          eventId: EventId.make("evt-steer-ready"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: requestedAt,
+          commandId: CommandId.make("cmd-steer-ready"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-steer-ready"),
+          metadata: {},
+          payload: {
+            threadId,
+            session: {
+              threadId,
+              status: "ready",
+              providerName: "claudeAgent",
+              runtimeMode: "approval-required",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: requestedAt,
+            },
+          },
+        });
+
+        yield* projectionPipeline.bootstrap;
+        const pendingRows = yield* sql<{ readonly count: number }>`
+          SELECT COUNT(*) AS count
+          FROM projection_turns
+          WHERE thread_id = ${threadId}
+            AND turn_id IS NULL
+        `;
+        assert.deepEqual(pendingRows, [{ count: 0 }]);
       }),
     );
   },

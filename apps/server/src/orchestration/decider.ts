@@ -49,7 +49,11 @@ function isStaleRequestFailureDetail(payload: Record<string, unknown> | null): b
     detail.includes("stale pending user-input request") ||
     detail.includes("unknown pending user-input request") ||
     detail.includes("unknown pending user input request") ||
-    detail.includes("unknown pending codex user input request")
+    detail.includes("unknown pending codex user input request") ||
+    detail.includes("stale pending plan-review request") ||
+    detail.includes("unknown pending plan-review request") ||
+    detail.includes("stale pending plan review request") ||
+    detail.includes("unknown pending plan review request")
   );
 }
 
@@ -71,15 +75,26 @@ function hasOpenBlockingRequest(thread: {
         : null;
     const requestId = typeof payload?.requestId === "string" ? payload.requestId : null;
     if (requestId === null) continue;
-    if (activity.kind === "approval.requested" || activity.kind === "user-input.requested") {
+    if (
+      activity.kind === "approval.requested" ||
+      activity.kind === "user-input.requested" ||
+      activity.kind === "plan.review.requested"
+    ) {
       openRequestIds.add(requestId);
-    } else if (activity.kind === "approval.resolved" || activity.kind === "user-input.resolved") {
+    } else if (
+      activity.kind === "approval.resolved" ||
+      activity.kind === "user-input.resolved" ||
+      activity.kind === "plan.review.resolved"
+    ) {
       openRequestIds.delete(requestId);
     } else if (
       (activity.kind === "provider.approval.respond.failed" ||
-        activity.kind === "provider.user-input.respond.failed") &&
+        activity.kind === "provider.user-input.respond.failed" ||
+        activity.kind === "provider.plan-review.respond.failed") &&
       isStaleRequestFailureDetail(payload)
     ) {
+      // Transient/stale respond failures clear the block. Non-stale
+      // plan-review failures stay open so the card remains retryable.
       openRequestIds.delete(requestId);
     }
   }
@@ -148,6 +163,8 @@ function withEventBase(
     readonly aggregateId: OrchestrationEvent["aggregateId"];
     readonly occurredAt: string;
     readonly metadata?: OrchestrationEvent["metadata"];
+    readonly causationEventId?: EventId;
+    readonly correlationId?: OrchestrationEvent["correlationId"];
   },
 ): Effect.Effect<
   Omit<OrchestrationEvent, "sequence" | "type" | "payload">,
@@ -163,8 +180,8 @@ function withEventBase(
           aggregateId: input.aggregateId,
           occurredAt: input.occurredAt,
           commandId: input.commandId,
-          causationEventId: null,
-          correlationId: input.commandId,
+          causationEventId: input.causationEventId ?? null,
+          correlationId: input.correlationId ?? input.commandId,
           metadata: input.metadata ?? {},
         })),
       ),
@@ -370,6 +387,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           modelSelection: command.modelSelection,
           runtimeMode: command.runtimeMode,
           interactionMode: command.interactionMode,
+          ...(command.workflow !== undefined ? { workflow: command.workflow } : {}),
           branch: command.branch,
           worktreePath: command.worktreePath,
           createdAt: command.createdAt,
@@ -897,11 +915,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           occurredAt,
           commandId: command.commandId,
         })),
-        type: "thread.interaction-mode-set",
+        type: "thread.interaction-mode-change-requested",
         payload: {
           threadId: command.threadId,
           interactionMode: command.interactionMode,
-          updatedAt: occurredAt,
+          ...(command.workflow !== undefined ? { workflow: command.workflow } : {}),
+          requestedAt: occurredAt,
         },
       };
     }
@@ -918,9 +937,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           aggregateId: command.threadId,
           occurredAt: command.createdAt,
           commandId: command.commandId,
+          causationEventId: command.causationEventId,
+          correlationId: command.requestCommandId,
         })),
-        causationEventId: command.causationEventId,
-        correlationId: command.requestCommandId,
         type: "thread.interaction-mode-set",
         payload: {
           threadId: command.threadId,
@@ -998,8 +1017,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             : {}),
           ...(command.titleSeed !== undefined ? { titleSeed: command.titleSeed } : {}),
           runtimeMode: targetThread.runtimeMode,
-          interactionMode: targetThread.interactionMode,
+          interactionMode: command.interactionMode ?? targetThread.interactionMode,
+          ...(command.workflow !== undefined ? { workflow: command.workflow } : {}),
           ...(sourceProposedPlan !== undefined ? { sourceProposedPlan } : {}),
+          ...(command.deliveryMode !== undefined ? { deliveryMode: command.deliveryMode } : {}),
           createdAt: command.createdAt,
         },
       };
@@ -1382,6 +1403,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           occurredAt: command.createdAt,
           commandId: command.commandId,
           ...(requestId !== undefined ? { metadata: { requestId } } : {}),
+          ...(command.causationEventId !== undefined
+            ? { causationEventId: command.causationEventId }
+            : {}),
+          ...(command.correlationId !== undefined ? { correlationId: command.correlationId } : {}),
         })),
         type: "thread.activity-appended",
         payload: {
@@ -1389,11 +1414,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           activity: command.activity,
         },
       };
-      // An approval or user-input request is blocked-on-you work — it must
-      // never stay hidden inside a settled slim row.
+      // User-blocking requests must never stay hidden inside a settled slim row.
       const wakesSettledThread =
         command.activity.kind === "approval.requested" ||
-        command.activity.kind === "user-input.requested";
+        command.activity.kind === "user-input.requested" ||
+        command.activity.kind === "plan.review.requested";
       // Real activity resets ANY override (settled wakes, active unpins).
       if (thread.settledOverride === null || !wakesSettledThread) {
         return activityAppendedEvent;

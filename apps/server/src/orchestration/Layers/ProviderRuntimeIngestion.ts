@@ -500,6 +500,72 @@ export function runtimeEventToActivities(
       ];
     }
 
+    case "turn.queued": {
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "turn.queued",
+          summary: "Turn queued",
+          payload: event.payload,
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "turn.aborted": {
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "turn.aborted",
+          summary: "Turn cancelled",
+          payload: event.payload,
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "plan.review.requested": {
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "plan.review.requested",
+          summary: "Plan review requested",
+          payload: {
+            requestId: event.requestId,
+            ...event.payload,
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "plan.review.resolved": {
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "plan.review.resolved",
+          summary: "Plan review resolved",
+          payload: {
+            requestId: event.requestId,
+            ...event.payload,
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
     case "user-input.requested": {
       return [
         {
@@ -1436,6 +1502,21 @@ const make = Effect.gen(function* () {
     const expectedTurnId = yield* getExpectedProviderTurnIdForThread(threadId);
     if (!sameId(expectedTurnId, eventTurnId)) {
       return null;
+    }
+
+    const concreteTurn = yield* projectionTurnRepository.getByTurnId({
+      threadId,
+      turnId: eventTurnId,
+    });
+    if (
+      Option.isSome(concreteTurn) &&
+      concreteTurn.value.sourceProposedPlanThreadId !== null &&
+      concreteTurn.value.sourceProposedPlanId !== null
+    ) {
+      return {
+        sourceThreadId: concreteTurn.value.sourceProposedPlanThreadId,
+        sourcePlanId: concreteTurn.value.sourceProposedPlanId,
+      } as const;
     }
 
     return yield* getSourceProposedPlanReferenceForPendingTurnStart(threadId);
