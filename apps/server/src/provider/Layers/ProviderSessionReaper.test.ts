@@ -157,6 +157,8 @@ describe("ProviderSessionReaper", () => {
       interruptTurn: () => unsupported(),
       respondToRequest: () => unsupported(),
       respondToUserInput: () => unsupported(),
+      respondToPlanReview: () => unsupported(),
+      setInteractionMode: () => unsupported(),
       stopSession,
       listSessions: () => Effect.succeed([]),
       getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),

@@ -3998,7 +3998,10 @@ describe("ClaudeAdapterLive", () => {
 
       // Respond with the user's answers.
       yield* adapter.respondToUserInput(session.threadId, ApprovalRequestId.make(requestId!), {
-        "Which framework?": "React",
+        kind: "submit",
+        answers: {
+          "Which framework?": { selectedOptions: ["React"] },
+        },
       });
 
       // The adapter should emit a user-input.resolved event.
@@ -4011,6 +4014,7 @@ describe("ClaudeAdapterLive", () => {
       if (resolvedEvent.value.type !== "user-input.resolved") {
         return;
       }
+      assert.equal(resolvedEvent.value.payload.outcome, "submitted");
       assert.deepEqual(resolvedEvent.value.payload.answers, {
         "Which framework?": "React",
       });
@@ -4111,7 +4115,10 @@ describe("ClaudeAdapterLive", () => {
       const requestId = requestedEvent.value.requestId;
 
       yield* adapter.respondToUserInput(session.threadId, ApprovalRequestId.make(requestId!), {
-        "Deploy to which env?": "Staging",
+        kind: "submit",
+        answers: {
+          "Deploy to which env?": { selectedOptions: ["Staging"] },
+        },
       });
 
       // Drain the resolved event.
@@ -4128,7 +4135,7 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("denies AskUserQuestion when the waiting turn is aborted", () => {
+  it.effect("projects pending AskUserQuestion aborts as cancelled before denying the SDK", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
@@ -4183,7 +4190,8 @@ describe("ClaudeAdapterLive", () => {
         assert.fail("Expected user-input.resolved event");
         return;
       }
-      assert.deepEqual(resolvedEvent.value.payload.answers, {});
+      assert.equal(resolvedEvent.value.payload.outcome, "cancelled");
+      assert.equal(resolvedEvent.value.payload.answers, undefined);
 
       const permissionResult = yield* Effect.promise(() => permissionPromise);
       assert.deepEqual(permissionResult, {

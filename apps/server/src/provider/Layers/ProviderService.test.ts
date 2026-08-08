@@ -22,6 +22,7 @@ import {
 import { createModelSelection } from "@t3tools/shared/model";
 import { it, assert, vi } from "@effect/vitest";
 
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -39,6 +40,7 @@ import {
   ProviderAdapterRequestError,
   ProviderAdapterSessionNotFoundError,
   ProviderUnsupportedError,
+  ProviderSessionDirectoryPersistenceError,
   ProviderValidationError,
   type ProviderAdapterError,
 } from "../Errors.ts";
@@ -69,6 +71,8 @@ const codexInstanceId = ProviderInstanceId.make("codex");
 const claudeAgentInstanceId = ProviderInstanceId.make("claudeAgent");
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
 const CLAUDE_AGENT_DRIVER = ProviderDriverKind.make("claudeAgent");
+const ompInstanceId = ProviderInstanceId.make("omp");
+const OMP_DRIVER = ProviderDriverKind.make("omp");
 const CURSOR_DRIVER = ProviderDriverKind.make("cursor");
 
 type LegacyProviderRuntimeEvent = {
@@ -86,6 +90,7 @@ type LegacyProviderRuntimeEvent = {
 
 function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
   const sessions = new Map<ThreadId, ProviderSession>();
+  const activeTurnThreads = new Set<ThreadId>();
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
 
   const startSession = vi.fn((input: ProviderSessionStartInput) =>
@@ -107,6 +112,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
         updatedAt: now,
       };
       sessions.set(session.threadId, session);
+      activeTurnThreads.delete(session.threadId);
       return session;
     }),
   );
@@ -124,9 +130,18 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
         );
       }
 
+      const queued = input.deliveryMode === "follow-up" && activeTurnThreads.has(input.threadId);
+      const turnId = TurnId.make(
+        queued ? `turn-${String(input.threadId)}-queued` : `turn-${String(input.threadId)}`,
+      );
+      if (!queued) {
+        activeTurnThreads.add(input.threadId);
+      }
+
       return Effect.succeed({
         threadId: input.threadId,
-        turnId: TurnId.make(`turn-${String(input.threadId)}`),
+        turnId,
+        ...(queued ? { queued: true } : {}),
       });
     },
   );
@@ -156,6 +171,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     (threadId: ThreadId): Effect.Effect<void, ProviderAdapterError> =>
       Effect.sync(() => {
         sessions.delete(threadId);
+        activeTurnThreads.delete(threadId);
       }),
   );
 
@@ -840,6 +856,620 @@ it.effect(
     }).pipe(Effect.provide(NodeServices.layer)),
 );
 
+it.effect("persists a promoted OMP queued model selection across recovery", () =>
+  Effect.gen(function* () {
+    const tempDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3-provider-service-omp-model-promotion-"),
+    );
+    const dbPath = NodePath.join(tempDir, "orchestration.sqlite");
+    const persistenceLayer = makeSqlitePersistenceLive(dbPath);
+    const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
+      Layer.provide(persistenceLayer),
+    );
+    const promotedSelection = createModelSelection(ompInstanceId, "fixture/promoted-model", [
+      { id: "reasoning", value: "high" },
+      { id: "fastMode", value: true },
+    ]);
+    const firstOmp = makeFakeCodexAdapter(OMP_DRIVER);
+    firstOmp.sendTurn.mockImplementation((input: ProviderSendTurnInput) =>
+      Effect.gen(function* () {
+        const followUp = input.deliveryMode === "follow-up";
+        const turnId = TurnId.make(
+          followUp ? `turn-${String(input.threadId)}-queued` : `turn-${String(input.threadId)}`,
+        );
+        if (followUp) {
+          firstOmp.emit({
+            type: "turn.started",
+            eventId: asEventId("evt-omp-promoted-model-race"),
+            provider: OMP_DRIVER,
+            createdAt: "2026-01-01T00:00:01.000Z",
+            threadId: input.threadId,
+            turnId,
+            payload: { model: promotedSelection.model, effort: "high" },
+            raw: { type: "host_turn_promoted", clientTurnId: turnId },
+          });
+          // Let ProviderService process promotion before sendTurn returns.
+          yield* Effect.yieldNow;
+        }
+        return {
+          threadId: input.threadId,
+          turnId,
+          ...(followUp ? { queued: true as const } : {}),
+        };
+      }),
+    );
+    const firstRegistry = makeAdapterRegistryMock({
+      [OMP_DRIVER]: firstOmp.adapter,
+    });
+    const firstDirectoryLayer = ProviderSessionDirectoryLive.pipe(
+      Layer.provide(runtimeRepositoryLayer),
+    );
+    const firstProviderLayer = makeProviderServiceLive().pipe(
+      Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, firstRegistry)),
+      Layer.provide(firstDirectoryLayer),
+      Layer.provide(defaultServerSettingsLayer),
+      Layer.provide(AnalyticsService.layerTest),
+      Layer.provide(
+        Layer.succeed(
+          ProviderEventLoggers.ProviderEventLoggers,
+          ProviderEventLoggers.NoOpProviderEventLoggers,
+        ),
+      ),
+    );
+    const threadId = asThreadId("thread-omp-promoted-model");
+
+    yield* Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      yield* provider.startSession(threadId, {
+        provider: OMP_DRIVER,
+        providerInstanceId: ompInstanceId,
+        threadId,
+        cwd: "/tmp/project-omp-promoted-model",
+        modelSelection: createModelSelection(ompInstanceId, "fixture/original-model"),
+        runtimeMode: "full-access",
+      });
+      yield* provider.sendTurn({
+        threadId,
+        input: "first",
+        attachments: [],
+      });
+      // Ensure the provider-service adapter subscription is live before the
+      // mock emits promotion from inside the queued send.
+      yield* advanceTestClock(1);
+      const queued = yield* provider.sendTurn({
+        threadId,
+        input: "follow up",
+        attachments: [],
+        deliveryMode: "follow-up",
+        modelSelection: promotedSelection,
+      });
+      assert.equal(queued.queued, true);
+      assert.equal(String(queued.turnId), `turn-${String(threadId)}-queued`);
+      // The adapter emitted promotion before its queued send returned. Drain
+      // the service subscription so its best-effort binding update completes.
+      yield* advanceTestClock(10);
+    }).pipe(Effect.provide(Layer.merge(firstProviderLayer, runtimeRepositoryLayer)));
+
+    const persisted = yield* Effect.gen(function* () {
+      const repository = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
+      return yield* repository.getByThreadId({ threadId });
+    }).pipe(Effect.provide(runtimeRepositoryLayer));
+    assert.equal(Option.isSome(persisted), true);
+    if (Option.isSome(persisted)) {
+      const payload = persisted.value.runtimePayload;
+      assert.equal(
+        payload !== null && typeof payload === "object" && !Array.isArray(payload),
+        true,
+      );
+      if (payload !== null && typeof payload === "object" && !Array.isArray(payload)) {
+        assert.deepEqual(
+          "modelSelection" in payload ? payload.modelSelection : undefined,
+          promotedSelection,
+        );
+      }
+    }
+
+    const secondOmp = makeFakeCodexAdapter(OMP_DRIVER);
+    const secondRegistry = makeAdapterRegistryMock({
+      [OMP_DRIVER]: secondOmp.adapter,
+    });
+    const secondDirectoryLayer = ProviderSessionDirectoryLive.pipe(
+      Layer.provide(runtimeRepositoryLayer),
+    );
+    const secondProviderLayer = makeProviderServiceLive().pipe(
+      Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, secondRegistry)),
+      Layer.provide(secondDirectoryLayer),
+      Layer.provide(defaultServerSettingsLayer),
+      Layer.provide(AnalyticsService.layerTest),
+      Layer.provide(
+        Layer.succeed(
+          ProviderEventLoggers.ProviderEventLoggers,
+          ProviderEventLoggers.NoOpProviderEventLoggers,
+        ),
+      ),
+    );
+
+    yield* Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      yield* provider.sendTurn({
+        threadId,
+        input: "recover",
+        attachments: [],
+      });
+    }).pipe(Effect.provide(secondProviderLayer));
+
+    assert.equal(secondOmp.startSession.mock.calls.length, 1);
+    assert.deepEqual(secondOmp.startSession.mock.calls[0]?.[0].modelSelection, promotedSelection);
+    NodeFS.rmSync(tempDir, { recursive: true, force: true });
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("publishes runtime events when binding refresh fails", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const tempDir = NodeFS.mkdtempSync(
+        NodePath.join(NodeOS.tmpdir(), "t3-provider-service-binding-failure-"),
+      );
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(tempDir, { recursive: true, force: true })),
+      );
+      const persistenceLayer = makeSqlitePersistenceLive(
+        NodePath.join(tempDir, "orchestration.sqlite"),
+      );
+      const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
+        Layer.provide(persistenceLayer),
+      );
+      const directoryLayer = ProviderSessionDirectoryLive.pipe(
+        Layer.provide(runtimeRepositoryLayer),
+      );
+      let failBindingReads = false;
+      const flakyDirectoryLayer = Layer.effect(
+        ProviderSessionDirectory.ProviderSessionDirectory,
+        Effect.gen(function* () {
+          const delegate = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+          return {
+            ...delegate,
+            getBinding: (threadId: ThreadId) =>
+              failBindingReads
+                ? Effect.fail(
+                    new ProviderSessionDirectoryPersistenceError({
+                      operation: "getBinding",
+                      detail: "injected binding read failure",
+                    }),
+                  )
+                : delegate.getBinding(threadId),
+          };
+        }),
+      ).pipe(Layer.provide(directoryLayer));
+      const omp = makeFakeCodexAdapter(OMP_DRIVER);
+      const registry = makeAdapterRegistryMock({ [OMP_DRIVER]: omp.adapter });
+      const providerLayer = makeProviderServiceLive().pipe(
+        Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
+        Layer.provide(flakyDirectoryLayer),
+        Layer.provide(defaultServerSettingsLayer),
+        Layer.provide(AnalyticsService.layerTest),
+        Layer.provide(
+          Layer.succeed(
+            ProviderEventLoggers.ProviderEventLoggers,
+            ProviderEventLoggers.NoOpProviderEventLoggers,
+          ),
+        ),
+      );
+      const threadId = asThreadId("thread-binding-update-failure");
+      const eventId = asEventId("evt-binding-update-failure");
+
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        yield* provider.startSession(threadId, {
+          provider: OMP_DRIVER,
+          providerInstanceId: ompInstanceId,
+          threadId,
+          cwd: "/tmp/project-binding-update-failure",
+          runtimeMode: "full-access",
+        });
+        const observedFiber = yield* provider.streamEvents.pipe(
+          Stream.filter((event) => event.eventId === eventId),
+          Stream.runHead,
+          Effect.forkScoped,
+        );
+        yield* advanceTestClock(1);
+        failBindingReads = true;
+        omp.emit({
+          type: "session.configured",
+          eventId,
+          provider: OMP_DRIVER,
+          createdAt: "2026-01-01T00:00:01.000Z",
+          threadId,
+          payload: { resumeCursor: { sessionKey: "session.jsonl" } },
+        });
+        yield* advanceTestClock(10);
+        if (observedFiber.pollUnsafe() === undefined) {
+          throw new Error("runtime event was dropped after binding refresh failure");
+        }
+        const emitted = yield* Fiber.join(observedFiber);
+        assert.equal(Option.getOrUndefined(emitted)?.eventId, eventId);
+      }).pipe(Effect.provide(providerLayer));
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("keeps the existing OMP model when a queued follow-up has no new selection", () =>
+  Effect.gen(function* () {
+    const tempDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3-provider-service-omp-model-unchanged-"),
+    );
+    const dbPath = NodePath.join(tempDir, "orchestration.sqlite");
+    const persistenceLayer = makeSqlitePersistenceLive(dbPath);
+    const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
+      Layer.provide(persistenceLayer),
+    );
+    const existingSelection = createModelSelection(ompInstanceId, "fixture/existing-model", [
+      { id: "reasoning", value: "medium" },
+    ]);
+    const omp = makeFakeCodexAdapter(OMP_DRIVER);
+    omp.sendTurn.mockImplementation((input: ProviderSendTurnInput) => {
+      const followUp = input.deliveryMode === "follow-up";
+      return Effect.succeed({
+        threadId: input.threadId,
+        turnId: TurnId.make(
+          followUp ? `turn-${String(input.threadId)}-queued` : `turn-${String(input.threadId)}`,
+        ),
+        ...(followUp ? { queued: true as const } : {}),
+      });
+    });
+    const registry = makeAdapterRegistryMock({
+      [OMP_DRIVER]: omp.adapter,
+    });
+    const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
+    const providerLayer = makeProviderServiceLive().pipe(
+      Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
+      Layer.provide(directoryLayer),
+      Layer.provide(defaultServerSettingsLayer),
+      Layer.provide(AnalyticsService.layerTest),
+      Layer.provide(
+        Layer.succeed(
+          ProviderEventLoggers.ProviderEventLoggers,
+          ProviderEventLoggers.NoOpProviderEventLoggers,
+        ),
+      ),
+    );
+    const threadId = asThreadId("thread-omp-existing-model");
+
+    yield* Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      yield* provider.startSession(threadId, {
+        provider: OMP_DRIVER,
+        providerInstanceId: ompInstanceId,
+        threadId,
+        modelSelection: existingSelection,
+        runtimeMode: "full-access",
+      });
+      yield* provider.sendTurn({
+        threadId,
+        input: "first",
+        attachments: [],
+      });
+      const queued = yield* provider.sendTurn({
+        threadId,
+        input: "follow up without model change",
+        attachments: [],
+        deliveryMode: "follow-up",
+      });
+      omp.emit({
+        type: "turn.started",
+        eventId: asEventId("evt-omp-existing-model"),
+        provider: OMP_DRIVER,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        threadId,
+        turnId: queued.turnId,
+        payload: { model: existingSelection.model },
+        raw: {
+          type: "host_turn_promoted",
+          clientTurnId: queued.turnId,
+        },
+      });
+      yield* advanceTestClock(10);
+    }).pipe(Effect.provide(providerLayer));
+
+    const persisted = yield* Effect.gen(function* () {
+      const repository = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
+      return yield* repository.getByThreadId({ threadId });
+    }).pipe(Effect.provide(runtimeRepositoryLayer));
+    assert.equal(Option.isSome(persisted), true);
+    if (Option.isSome(persisted)) {
+      const payload = persisted.value.runtimePayload;
+      assert.equal(
+        payload !== null && typeof payload === "object" && !Array.isArray(payload),
+        true,
+      );
+      if (payload !== null && typeof payload === "object" && !Array.isArray(payload)) {
+        assert.deepEqual(
+          "modelSelection" in payload ? payload.modelSelection : undefined,
+          existingSelection,
+        );
+      }
+    }
+    NodeFS.rmSync(tempDir, { recursive: true, force: true });
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("clears queued OMP model overrides on turn abort before promotion", () =>
+  Effect.gen(function* () {
+    const tempDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3-provider-service-omp-model-abort-"),
+    );
+    const dbPath = NodePath.join(tempDir, "orchestration.sqlite");
+    const persistenceLayer = makeSqlitePersistenceLive(dbPath);
+    const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
+      Layer.provide(persistenceLayer),
+    );
+    const cancelledSelection = createModelSelection(ompInstanceId, "fixture/cancelled-model", [
+      { id: "reasoning", value: "high" },
+    ]);
+    const omp = makeFakeCodexAdapter(OMP_DRIVER);
+    omp.sendTurn.mockImplementation((input: ProviderSendTurnInput) => {
+      const followUp = input.deliveryMode === "follow-up";
+      return Effect.succeed({
+        threadId: input.threadId,
+        turnId: TurnId.make(
+          followUp ? `turn-${String(input.threadId)}-queued` : `turn-${String(input.threadId)}`,
+        ),
+        ...(followUp ? { queued: true as const } : {}),
+      });
+    });
+    const registry = makeAdapterRegistryMock({
+      [OMP_DRIVER]: omp.adapter,
+    });
+    const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
+    const providerLayer = makeProviderServiceLive().pipe(
+      Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
+      Layer.provide(directoryLayer),
+      Layer.provide(defaultServerSettingsLayer),
+      Layer.provide(AnalyticsService.layerTest),
+      Layer.provide(
+        Layer.succeed(
+          ProviderEventLoggers.ProviderEventLoggers,
+          ProviderEventLoggers.NoOpProviderEventLoggers,
+        ),
+      ),
+    );
+    const threadId = asThreadId("thread-omp-cancelled-model");
+
+    yield* Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      yield* provider.startSession(threadId, {
+        provider: OMP_DRIVER,
+        providerInstanceId: ompInstanceId,
+        threadId,
+        modelSelection: createModelSelection(ompInstanceId, "fixture/original-model"),
+        runtimeMode: "full-access",
+      });
+      yield* provider.sendTurn({
+        threadId,
+        input: "first",
+        attachments: [],
+      });
+      const queued = yield* provider.sendTurn({
+        threadId,
+        input: "follow up",
+        attachments: [],
+        deliveryMode: "follow-up",
+        modelSelection: cancelledSelection,
+      });
+      assert.equal(queued.queued, true);
+      const aborted = yield* Deferred.make<void>();
+      const started = yield* Deferred.make<void>();
+      yield* Stream.runForEach(provider.streamEvents, (event) => {
+        if (event.type === "turn.aborted" && String(event.turnId) === String(queued.turnId)) {
+          return Deferred.succeed(aborted, undefined).pipe(Effect.asVoid);
+        }
+        if (event.type === "turn.started" && String(event.turnId) === String(queued.turnId)) {
+          return Deferred.succeed(started, undefined).pipe(Effect.asVoid);
+        }
+        return Effect.void;
+      }).pipe(Effect.forkScoped);
+      yield* advanceTestClock(1);
+      omp.emit({
+        type: "turn.aborted",
+        eventId: asEventId("evt-omp-cancelled-model"),
+        provider: OMP_DRIVER,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        threadId,
+        turnId: queued.turnId,
+        payload: { reason: "OMP queued follow-up was cancelled before promotion." },
+        raw: {
+          type: "host_turn_cancelled",
+          clientTurnId: queued.turnId,
+        },
+      });
+      yield* advanceTestClock(1);
+      yield* Deferred.await(aborted);
+      omp.emit({
+        type: "turn.started",
+        eventId: asEventId("evt-omp-cancelled-model-started"),
+        provider: OMP_DRIVER,
+        createdAt: "2026-01-01T00:00:02.000Z",
+        threadId,
+        turnId: queued.turnId,
+        payload: { model: cancelledSelection.model },
+        raw: {
+          type: "host_turn_promoted",
+          clientTurnId: queued.turnId,
+        },
+      });
+      yield* advanceTestClock(1);
+      yield* Deferred.await(started);
+    }).pipe(Effect.provide(providerLayer));
+
+    const persisted = yield* Effect.gen(function* () {
+      const repository = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
+      return yield* repository.getByThreadId({ threadId });
+    }).pipe(Effect.provide(runtimeRepositoryLayer));
+    assert.equal(Option.isSome(persisted), true);
+    if (Option.isSome(persisted)) {
+      const payload = persisted.value.runtimePayload;
+      if (payload !== null && typeof payload === "object" && !Array.isArray(payload)) {
+        assert.notDeepEqual(
+          "modelSelection" in payload ? payload.modelSelection : undefined,
+          cancelledSelection,
+        );
+      }
+    }
+    NodeFS.rmSync(tempDir, { recursive: true, force: true });
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("defers interaction-mode projection when the adapter lacks live setInteractionMode", () =>
+  Effect.gen(function* () {
+    const tempDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3-provider-service-mode-defer-"),
+    );
+    const dbPath = NodePath.join(tempDir, "orchestration.sqlite");
+    const persistenceLayer = makeSqlitePersistenceLive(dbPath);
+    const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
+      Layer.provide(persistenceLayer),
+    );
+    const codex = makeFakeCodexAdapter(CODEX_DRIVER);
+    const registry = makeAdapterRegistryMock({
+      [CODEX_DRIVER]: codex.adapter,
+    });
+    const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
+    const providerLayer = makeProviderServiceLive().pipe(
+      Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
+      Layer.provide(directoryLayer),
+      Layer.provide(defaultServerSettingsLayer),
+      Layer.provide(AnalyticsService.layerTest),
+      Layer.provide(
+        Layer.succeed(
+          ProviderEventLoggers.ProviderEventLoggers,
+          ProviderEventLoggers.NoOpProviderEventLoggers,
+        ),
+      ),
+    );
+    const threadId = asThreadId("thread-mode-defer");
+
+    yield* Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      // Codex has no live setInteractionMode; this must succeed so the reactor
+      // can project the mode for the next turn instead of rejecting.
+      yield* provider.setInteractionMode({
+        threadId,
+        interactionMode: "plan",
+        workflow: "iterative",
+      });
+    }).pipe(Effect.provide(providerLayer));
+
+    NodeFS.rmSync(tempDir, { recursive: true, force: true });
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "upserts immediately when follow-up delivery runs now despite a stale running binding",
+  () =>
+    Effect.gen(function* () {
+      const tempDir = NodeFS.mkdtempSync(
+        NodePath.join(NodeOS.tmpdir(), "t3-provider-service-follow-up-race-"),
+      );
+      const dbPath = NodePath.join(tempDir, "orchestration.sqlite");
+      const persistenceLayer = makeSqlitePersistenceLive(dbPath);
+      const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
+        Layer.provide(persistenceLayer),
+      );
+      const immediateSelection = createModelSelection(ompInstanceId, "fixture/immediate-model", [
+        { id: "reasoning", value: "high" },
+      ]);
+      const omp = makeFakeCodexAdapter(OMP_DRIVER);
+      // Simulate the race: binding still says running, but native state had
+      // already settled so the adapter starts the follow-up immediately.
+      omp.sendTurn.mockImplementation((input: ProviderSendTurnInput) =>
+        Effect.succeed({
+          threadId: input.threadId,
+          turnId: TurnId.make(`turn-${String(input.threadId)}-immediate`),
+          queued: false,
+        }),
+      );
+      const registry = makeAdapterRegistryMock({
+        [OMP_DRIVER]: omp.adapter,
+      });
+      const directoryLayer = ProviderSessionDirectoryLive.pipe(
+        Layer.provide(runtimeRepositoryLayer),
+      );
+      const providerLayer = makeProviderServiceLive().pipe(
+        Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
+        Layer.provide(directoryLayer),
+        Layer.provide(defaultServerSettingsLayer),
+        Layer.provide(AnalyticsService.layerTest),
+        Layer.provide(
+          Layer.succeed(
+            ProviderEventLoggers.ProviderEventLoggers,
+            ProviderEventLoggers.NoOpProviderEventLoggers,
+          ),
+        ),
+      );
+      const fullLayer = Layer.merge(providerLayer, directoryLayer);
+      const threadId = asThreadId("thread-follow-up-race");
+
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+        yield* provider.startSession(threadId, {
+          provider: OMP_DRIVER,
+          providerInstanceId: ompInstanceId,
+          threadId,
+          modelSelection: createModelSelection(ompInstanceId, "fixture/original-model"),
+          runtimeMode: "full-access",
+        });
+        // Force a stale running binding without going through sendTurn.
+        yield* directory.upsert({
+          threadId,
+          provider: OMP_DRIVER,
+          providerInstanceId: ompInstanceId,
+          status: "running",
+          runtimePayload: {
+            activeTurnId: TurnId.make("turn-stale"),
+            lastRuntimeEvent: "provider.sendTurn",
+            lastRuntimeEventAt: "2026-01-01T00:00:00.000Z",
+          },
+        });
+
+        const turn = yield* provider.sendTurn({
+          threadId,
+          input: "follow up after race",
+          attachments: [],
+          deliveryMode: "follow-up",
+          modelSelection: immediateSelection,
+        });
+        assert.equal(turn.queued, false);
+
+        const binding = yield* directory.getBinding(threadId);
+        assert.equal(Option.isSome(binding), true);
+        if (Option.isSome(binding)) {
+          const payload = binding.value.runtimePayload;
+          assert.equal(binding.value.status, "running");
+          assert.equal(
+            payload !== null && typeof payload === "object" && !Array.isArray(payload),
+            true,
+          );
+          if (payload !== null && typeof payload === "object" && !Array.isArray(payload)) {
+            assert.deepEqual(
+              "modelSelection" in payload ? payload.modelSelection : undefined,
+              immediateSelection,
+            );
+            assert.equal("activeTurnId" in payload ? payload.activeTurnId : undefined, turn.turnId);
+          }
+        }
+      }).pipe(Effect.provide(fullLayer));
+
+      NodeFS.rmSync(tempDir, { recursive: true, force: true });
+    }).pipe(Effect.provide(NodeServices.layer)),
+);
+
 routing.layer("ProviderServiceLive routing", (it) => {
   it.effect("routes provider operations and rollback conversation", () =>
     Effect.gen(function* () {
@@ -891,7 +1521,10 @@ routing.layer("ProviderServiceLive routing", (it) => {
           session.threadId,
           asRequestId("req-user-input-1"),
           {
-            sandbox_mode: "workspace-write",
+            kind: "submit",
+            answers: {
+              sandbox_mode: { selectedOptions: ["workspace-write"] },
+            },
           },
         ],
       ]);

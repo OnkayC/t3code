@@ -83,6 +83,11 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
       const runtimeRepository = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
 
       const threadId = ThreadId.make("thread-runtime");
+      const modelSelection = {
+        instanceId: "codex",
+        model: "gpt-5-codex",
+        options: [{ id: "reasoning", value: "medium" }],
+      };
 
       yield* directory.upsert({
         provider: ProviderDriverKind.make("codex"),
@@ -94,6 +99,7 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
         runtimePayload: {
           cwd: "/tmp/project",
           model: "gpt-5-codex",
+          modelSelection,
         },
       });
 
@@ -117,6 +123,7 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
         assert.deepEqual(runtime.value.runtimePayload, {
           cwd: "/tmp/project",
           model: "gpt-5-codex",
+          modelSelection,
           activeTurnId: "turn-1",
         });
       }

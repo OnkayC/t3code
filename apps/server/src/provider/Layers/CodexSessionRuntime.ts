@@ -11,11 +11,12 @@ import {
   type ProviderRequestKind,
   type ProviderSession,
   type ProviderTurnStartResult,
-  type ProviderUserInputAnswers,
+  type ProviderUserInputAnswer,
   RuntimeMode,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
+
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { normalizeModelSlug } from "@t3tools/shared/model";
 import * as Crypto from "effect/Crypto";
@@ -39,6 +40,7 @@ import { buildCodexInitializeParams } from "./CodexProvider.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.ts";
+type ProviderUserInputAnswerMap = Readonly<Record<string, ProviderUserInputAnswer>>;
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
 
 const PROVIDER = ProviderDriverKind.make("codex");
@@ -143,7 +145,7 @@ export interface CodexSessionRuntimeShape {
   ) => Effect.Effect<void, CodexSessionRuntimeError>;
   readonly respondToUserInput: (
     requestId: ApprovalRequestId,
-    answers: ProviderUserInputAnswers,
+    answers: ProviderUserInputAnswerMap,
   ) => Effect.Effect<void, CodexSessionRuntimeError>;
   readonly events: Stream.Stream<ProviderEvent, never>;
   readonly close: Effect.Effect<void>;
@@ -153,7 +155,6 @@ export type CodexSessionRuntimeError =
   | CodexErrors.CodexAppServerError
   | CodexSessionRuntimePendingApprovalNotFoundError
   | CodexSessionRuntimePendingUserInputNotFoundError
-  | CodexSessionRuntimeInvalidUserInputAnswersError
   | CodexSessionRuntimeThreadIdMissingError;
 
 export class CodexSessionRuntimePendingApprovalNotFoundError extends Schema.TaggedErrorClass<CodexSessionRuntimePendingApprovalNotFoundError>()(
@@ -175,17 +176,6 @@ export class CodexSessionRuntimePendingUserInputNotFoundError extends Schema.Tag
 ) {
   override get message(): string {
     return `Unknown pending Codex user input request: ${this.requestId}`;
-  }
-}
-
-export class CodexSessionRuntimeInvalidUserInputAnswersError extends Schema.TaggedErrorClass<CodexSessionRuntimeInvalidUserInputAnswersError>()(
-  "CodexSessionRuntimeInvalidUserInputAnswersError",
-  {
-    questionId: Schema.String,
-  },
-) {
-  override get message(): string {
-    return `Invalid Codex user input answers for question '${this.questionId}'`;
   }
 }
 
@@ -220,7 +210,7 @@ interface PendingUserInput {
   readonly requestId: ApprovalRequestId;
   readonly turnId: TurnId | undefined;
   readonly itemId: ProviderItemId | undefined;
-  readonly answers: Deferred.Deferred<ProviderUserInputAnswers>;
+  readonly answers: Deferred.Deferred<ProviderUserInputAnswerMap>;
 }
 
 type CodexServerNotification = {
@@ -347,7 +337,7 @@ function buildCodexCollaborationMode(input: {
     settings: {
       model,
       reasoning_effort: reasoningEffort,
-      developer_instructions: buildCodexDeveloperInstructions(mode, {
+      developer_instructions: buildCodexDeveloperInstructions(input.interactionMode, {
         model,
         reasoningEffort,
       }),
@@ -769,37 +759,18 @@ export function routeCodexChildNotification(method: string): CodexChildNotificat
   return "parent";
 }
 
-function toCodexUserInputAnswer(
-  questionId: string,
-  value: ProviderUserInputAnswers[string],
-): Effect.Effect<
-  EffectCodexSchema.ToolRequestUserInputResponse__ToolRequestUserInputAnswer,
-  CodexSessionRuntimeInvalidUserInputAnswersError
-> {
-  if (typeof value === "string") {
-    return Effect.succeed({ answers: [value] });
-  }
-  if (Array.isArray(value)) {
-    const answers = value.filter((entry): entry is string => typeof entry === "string");
-    return Effect.succeed({ answers });
-  }
-  return Effect.fail(new CodexSessionRuntimeInvalidUserInputAnswersError({ questionId }));
-}
-
 function toCodexUserInputAnswers(
-  answers: ProviderUserInputAnswers,
-): Effect.Effect<
-  EffectCodexSchema.ToolRequestUserInputResponse["answers"],
-  CodexSessionRuntimeInvalidUserInputAnswersError
-> {
-  return Effect.forEach(
-    Object.entries(answers),
-    ([questionId, value]) =>
-      toCodexUserInputAnswer(questionId, value).pipe(
-        Effect.map((answer) => [questionId, answer] as const),
-      ),
-    { concurrency: 1 },
-  ).pipe(Effect.map((entries) => Object.fromEntries(entries)));
+  answers: ProviderUserInputAnswerMap,
+): EffectCodexSchema.ToolRequestUserInputResponse["answers"] {
+  return Object.fromEntries(
+    Object.entries(answers).map(([questionId, value]) => {
+      const selected = [...value.selectedOptions];
+      if (value.customInput !== undefined) {
+        selected.push(value.customInput);
+      }
+      return [questionId, { answers: selected }] as const;
+    }),
+  );
 }
 
 function currentProviderThreadId(session: ProviderSession): string | undefined {
@@ -955,7 +926,7 @@ export const makeCodexSessionRuntime = (
         ),
       );
 
-    const settlePendingUserInputs = (answers: ProviderUserInputAnswers) =>
+    const settlePendingUserInputs = (answers: ProviderUserInputAnswerMap) =>
       Ref.get(pendingUserInputsRef).pipe(
         Effect.flatMap((pendingUserInputs) =>
           Effect.forEach(
@@ -1546,7 +1517,7 @@ export const makeCodexSessionRuntime = (
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4("user-input-request"));
         const turnId = TurnId.make(payload.turnId);
         const itemId = ProviderItemId.make(payload.itemId);
-        const answers = yield* Deferred.make<ProviderUserInputAnswers>();
+        const answers = yield* Deferred.make<ProviderUserInputAnswerMap>();
 
         yield* Ref.update(pendingUserInputsRef, (current) => {
           const next = new Map(current);
@@ -1580,13 +1551,7 @@ export const makeCodexSessionRuntime = (
         );
 
         return {
-          answers: yield* toCodexUserInputAnswers(resolvedAnswers).pipe(
-            Effect.mapError((error) =>
-              CodexErrors.CodexAppServerRequestError.invalidParams(error.message, {
-                questionId: error.questionId,
-              }),
-            ),
-          ),
+          answers: toCodexUserInputAnswers(resolvedAnswers),
         } satisfies EffectCodexSchema.ToolRequestUserInputResponse;
       }),
     );
@@ -1881,7 +1846,7 @@ export const makeCodexSessionRuntime = (
               requestId,
             });
           }
-          const codexAnswers = yield* toCodexUserInputAnswers(answers);
+          const codexAnswers = toCodexUserInputAnswers(answers);
           yield* Ref.update(pendingUserInputsRef, (current) => {
             const next = new Map(current);
             next.delete(requestId);

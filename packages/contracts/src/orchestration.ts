@@ -150,8 +150,6 @@ export const ProviderUserInputAnswer = Schema.Struct({
   note: Schema.optional(Schema.String),
 });
 export type ProviderUserInputAnswer = typeof ProviderUserInputAnswer.Type;
-/** Legacy adapter answer map retained until provider adapters adopt structured responses. */
-export type ProviderUserInputAnswers = Readonly<Record<string, string | string[]>>;
 
 export const ProviderUserInputResponse = Schema.Union([
   Schema.Struct({
