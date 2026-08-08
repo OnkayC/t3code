@@ -133,8 +133,11 @@ describe("buildPendingUserInputAnswers", () => {
         },
       ),
     ).toEqual({
-      scope: "Orchestration-first",
-      compat: "Keep the current envelope for one release window",
+      scope: { selectedOptions: ["Orchestration-first"] },
+      compat: {
+        selectedOptions: [],
+        customInput: "Keep the current envelope for one release window",
+      },
     });
   });
 
@@ -146,7 +149,7 @@ describe("buildPendingUserInputAnswers", () => {
         },
       }),
     ).toEqual({
-      areas: ["Server", "Web"],
+      areas: { selectedOptions: ["Server", "Web"] },
     });
   });
 

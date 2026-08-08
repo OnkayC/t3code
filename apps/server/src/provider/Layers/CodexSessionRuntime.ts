@@ -69,9 +69,6 @@ export function hasConfiguredMcpServer(appServerArgs: ReadonlyArray<string> | un
 export const CodexResumeCursorSchema = Schema.Struct({
   threadId: Schema.String,
 });
-const CodexUserInputAnswerObject = Schema.Struct({
-  answers: Schema.Array(Schema.String),
-});
 const isCodexResumeCursorSchema = Schema.is(CodexResumeCursorSchema);
 const isCodexUserInputAnswerObject = Schema.is(CodexUserInputAnswerObject);
 const NullableMcpElicitationString = Schema.NullOr(Schema.String);
@@ -569,8 +566,9 @@ function buildCodexCollaborationMode(input: {
   }
   const model = normalizeCodexModelSlug(input.model) ?? DEFAULT_MODEL;
   const reasoningEffort = input.effort ?? "medium";
+  const mode = input.interactionMode === "plan-paused" ? "plan" : input.interactionMode;
   return {
-    mode: input.interactionMode,
+    mode,
     settings: {
       model,
       reasoning_effort: reasoningEffort,
@@ -1056,9 +1054,6 @@ function toCodexUserInputAnswer(
   if (Array.isArray(value)) {
     const answers = value.filter((entry): entry is string => typeof entry === "string");
     return Effect.succeed({ answers });
-  }
-  if (isCodexUserInputAnswerObject(value)) {
-    return Effect.succeed({ answers: value.answers });
   }
   return Effect.fail(new CodexSessionRuntimeInvalidUserInputAnswersError({ questionId }));
 }

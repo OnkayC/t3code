@@ -3,6 +3,7 @@ import {
   CommandId,
   EventId,
   type ModelSelection,
+  type ProviderInteractionMode,
   type OrchestrationEvent,
   ProviderDriverKind,
   type ProjectId,
@@ -774,7 +775,7 @@ const make = Effect.gen(function* () {
     readonly messageText: string;
     readonly attachments?: ReadonlyArray<ChatAttachment>;
     readonly modelSelection?: ModelSelection;
-    readonly interactionMode?: "default" | "plan";
+    readonly interactionMode?: ProviderInteractionMode;
     readonly createdAt: string;
   }) {
     const thread = yield* resolveThread(input.threadId);
@@ -1386,7 +1387,7 @@ const make = Effect.gen(function* () {
         .respondToUserInput({
           threadId: event.payload.threadId,
           requestId: event.payload.requestId,
-          answers: event.payload.answers,
+          response: event.payload.response,
         })
         .pipe(
           Effect.catchCause((cause) =>

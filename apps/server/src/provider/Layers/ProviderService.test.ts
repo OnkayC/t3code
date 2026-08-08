@@ -966,8 +966,11 @@ routing.layer("ProviderServiceLive routing", (it) => {
       yield* provider.respondToUserInput({
         threadId: session.threadId,
         requestId: asRequestId("req-user-input-1"),
-        answers: {
-          sandbox_mode: "workspace-write",
+        response: {
+          kind: "submit",
+          answers: {
+            sandbox_mode: { selectedOptions: ["workspace-write"] },
+          },
         },
       });
       assert.deepEqual(routing.codex.respondToUserInput.mock.calls, [
@@ -1911,8 +1914,11 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
       yield* provider.respondToUserInput({
         threadId: session.threadId,
         requestId: asRequestId("req-metrics-2"),
-        answers: {
-          sandbox_mode: "workspace-write",
+        response: {
+          kind: "submit",
+          answers: {
+            sandbox_mode: { selectedOptions: ["workspace-write"] },
+          },
         },
       });
       yield* provider.rollbackConversation({

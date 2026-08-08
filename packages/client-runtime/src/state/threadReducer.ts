@@ -598,6 +598,7 @@ export function applyThreadDetailEvent(
     // ── Events that don't mutate thread state directly ──────────────
     case "thread.approval-response-requested":
     case "thread.user-input-response-requested":
+    case "thread.plan-review-response-requested":
     case "thread.checkpoint-revert-requested":
       return { kind: "unchanged" };
   }
