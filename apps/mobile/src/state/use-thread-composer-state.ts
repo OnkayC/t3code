@@ -7,6 +7,7 @@ import {
   type EnvironmentId,
   type ModelSelection,
   type ProviderInteractionMode,
+  type ProviderPlanWorkflow,
   type RuntimeMode,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -103,6 +104,7 @@ export function useThreadComposerState() {
   const modelSelection = selectedDraft?.modelSelection ?? selectedThread?.modelSelection ?? null;
   const runtimeMode = selectedDraft?.runtimeMode ?? selectedThread?.runtimeMode ?? null;
   const interactionMode = selectedDraft?.interactionMode ?? selectedThread?.interactionMode ?? null;
+  const workflow = selectedDraft?.workflow ?? selectedThread?.workflow ?? null;
 
   const selectedThreadSessionActivity = useMemo(() => {
     const selectedThread = selectedThreadDetail ?? selectedThreadShell;
@@ -143,6 +145,7 @@ export function useThreadComposerState() {
     const thread = selectedThreadDetail ?? selectedThreadShell;
     const text = draft.text.trim();
     const attachments = draft.attachments;
+    const selectedWorkflow = draft.workflow ?? thread.workflow;
     if (text.length === 0 && attachments.length === 0) {
       return null;
     }
@@ -164,6 +167,7 @@ export function useThreadComposerState() {
       modelSelection: draft.modelSelection ?? thread.modelSelection,
       runtimeMode: draft.runtimeMode ?? thread.runtimeMode,
       interactionMode: draft.interactionMode ?? thread.interactionMode,
+      ...(selectedWorkflow !== undefined ? { workflow: selectedWorkflow } : {}),
       createdAt: metadata.createdAt,
     });
     clearComposerDraftContent(threadKey);
@@ -290,11 +294,14 @@ export function useThreadComposerState() {
   );
 
   const onUpdateInteractionMode = useCallback(
-    (value: ProviderInteractionMode) => {
+    (value: ProviderInteractionMode, workflow?: ProviderPlanWorkflow) => {
       if (!selectedThreadKey) {
         return;
       }
-      updateComposerDraftSettings(selectedThreadKey, { interactionMode: value });
+      updateComposerDraftSettings(selectedThreadKey, {
+        interactionMode: value,
+        ...(workflow !== undefined ? { workflow } : {}),
+      });
     },
     [selectedThreadKey],
   );
@@ -308,6 +315,7 @@ export function useThreadComposerState() {
     modelSelection,
     runtimeMode,
     interactionMode,
+    workflow,
     activeThreadBusy,
     onChangeDraftMessage,
     onPickDraftImages,

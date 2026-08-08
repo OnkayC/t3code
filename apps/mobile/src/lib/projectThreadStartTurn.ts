@@ -5,6 +5,7 @@ import {
   type ModelSelection,
   type ProjectId,
   type ProviderInteractionMode,
+  type ProviderPlanWorkflow,
   type RuntimeMode,
 } from "@t3tools/contracts";
 
@@ -32,7 +33,8 @@ export interface ProjectThreadStartTurnSpec {
   readonly modelSelection: ModelSelection;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
-  readonly workspaceMode: "local" | "worktree";
+  readonly workflow?: ProviderPlanWorkflow;
+  readonly envMode: "local" | "worktree";
   readonly branch: string | null;
   readonly worktreePath: string | null;
   readonly startFromOrigin: boolean;
@@ -47,7 +49,7 @@ export interface ProjectThreadStartTurnSpec {
  */
 export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpec) {
   const title = deriveThreadTitleFromPrompt(spec.text);
-  const isWorktree = spec.workspaceMode === "worktree";
+  const isWorktree = spec.envMode === "worktree";
   return {
     commandId: CommandId.make(spec.commandId),
     threadId: ThreadId.make(spec.threadId),
@@ -61,6 +63,7 @@ export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpe
     titleSeed: title,
     runtimeMode: spec.runtimeMode,
     interactionMode: spec.interactionMode,
+    ...(spec.workflow !== undefined ? { workflow: spec.workflow } : {}),
     bootstrap: {
       createThread: {
         projectId: spec.projectId,
@@ -68,7 +71,8 @@ export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpe
         modelSelection: spec.modelSelection,
         runtimeMode: spec.runtimeMode,
         interactionMode: spec.interactionMode,
-        branch: spec.branch,
+        ...(spec.workflow !== undefined ? { workflow: spec.workflow } : {}),
+        branch: isWorktree ? null : spec.branch,
         worktreePath: isWorktree ? null : spec.worktreePath,
         createdAt: spec.createdAt,
       },

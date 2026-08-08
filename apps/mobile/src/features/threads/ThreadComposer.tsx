@@ -5,6 +5,7 @@ import type {
   ModelSelection,
   OrchestrationThreadShell,
   ProviderInteractionMode,
+  ProviderPlanWorkflow,
   RuntimeMode,
   ServerConfig as T3ServerConfig,
 } from "@t3tools/contracts";
@@ -99,6 +100,7 @@ export interface ThreadComposerProps {
    */
   readonly threadSyncPhase?: "loading" | "syncing" | null;
   readonly selectedThread: OrchestrationThreadShell;
+  readonly workflow: ProviderPlanWorkflow | null;
   readonly serverConfig: T3ServerConfig | null;
   readonly queueCount: number;
   readonly activeThreadBusy: boolean;
@@ -113,7 +115,10 @@ export interface ThreadComposerProps {
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onUpdateModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateRuntimeMode: (runtimeMode: RuntimeMode) => void;
-  readonly onUpdateInteractionMode: (interactionMode: ProviderInteractionMode) => void;
+  readonly onUpdateInteractionMode: (
+    interactionMode: ProviderInteractionMode,
+    workflow?: ProviderPlanWorkflow,
+  ) => void;
   readonly onReconnectEnvironment: () => void;
   readonly onExpandedChange?: (expanded: boolean) => void;
 }
@@ -317,6 +322,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const currentModelSelection = props.selectedThread.modelSelection;
   const currentRuntimeMode = props.selectedThread.runtimeMode;
   const currentInteractionMode = props.selectedThread.interactionMode ?? "default";
+  const currentPlanWorkflow = props.workflow;
   const connectionStatus = composerConnectionStatus({
     connectionError: props.connectionError,
     connectionState: props.connectionState,
@@ -333,6 +339,23 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       ) ?? null
     );
   }, [props.serverConfig, props.selectedThread.modelSelection.instanceId]);
+  useEffect(() => {
+    if (
+      selectedProviderStatus?.supportedRuntimeModes &&
+      selectedProviderStatus.supportedRuntimeModes.length > 0 &&
+      currentRuntimeMode &&
+      !selectedProviderStatus.supportedRuntimeModes.includes(currentRuntimeMode)
+    ) {
+      const fallback = selectedProviderStatus.supportedRuntimeModes[0];
+      if (fallback) {
+        props.onUpdateRuntimeMode(fallback);
+      }
+    }
+  }, [
+    selectedProviderStatus?.supportedRuntimeModes,
+    currentRuntimeMode,
+    props.onUpdateRuntimeMode,
+  ]);
 
   // ── Trigger detection ────────────────────────────────────
   const [composerSelection, setComposerSelection] = useState(() => ({
@@ -612,6 +635,17 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   );
 
   // ── Options menu ─────────────────────────────────────────
+  const supportedRuntimeModes = selectedProviderStatus?.supportedRuntimeModes ?? [
+    "approval-required",
+    "auto-accept-edits",
+    "auto",
+    "full-access",
+  ];
+  const supportedInteractionModes = selectedProviderStatus?.supportedInteractionModes ?? [
+    "default",
+    "plan",
+  ];
+  const supportedPlanWorkflows = selectedProviderStatus?.supportedPlanWorkflows ?? [];
   const optionsMenuActions = useMemo(
     () => [
       ...buildProviderOptionMenuActions(providerOptionDescriptors),
@@ -627,37 +661,72 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 ? "Auto"
                 : "Full access",
         subactions: [
-          { id: "options:runtime:approval-required", title: "Approve actions" },
-          { id: "options:runtime:auto-accept-edits", title: "Auto-accept edits" },
-          { id: "options:runtime:auto", title: "Auto" },
-          { id: "options:runtime:full-access", title: "Full access" },
-        ].map((option) => {
-          const value = option.id.replace("options:runtime:", "");
-          return {
-            id: option.id,
+          { value: "approval-required", title: "Approve actions" },
+          { value: "auto-accept-edits", title: "Auto-accept edits" },
+          { value: "auto", title: "Auto" },
+          { value: "full-access", title: "Full access" },
+        ]
+          .filter((option) => supportedRuntimeModes.includes(option.value as RuntimeMode))
+          .map((option) => ({
+            id: `options:runtime:${option.value}`,
             title: option.title,
-            state: currentRuntimeMode === value ? ("on" as const) : undefined,
-          };
-        }),
+            state: currentRuntimeMode === option.value ? ("on" as const) : undefined,
+          })),
       },
       {
         id: "options-interaction",
         title: "Interaction",
-        subtitle: currentInteractionMode === "plan" ? "Plan" : "Default",
+        subtitle:
+          currentInteractionMode === "plan-paused"
+            ? "Plan paused"
+            : currentInteractionMode === "plan"
+              ? "Plan"
+              : "Default",
         subactions: [
-          { id: "options:interaction:default", title: "Default" },
-          { id: "options:interaction:plan", title: "Plan" },
-        ].map((option) => {
-          const value = option.id.replace("options:interaction:", "");
-          return {
-            id: option.id,
+          { value: "default", title: "Default" },
+          { value: "plan", title: "Plan" },
+          { value: "plan-paused", title: "Pause plan" },
+        ]
+          .filter((option) =>
+            supportedInteractionModes.includes(option.value as ProviderInteractionMode),
+          )
+          .map((option) => ({
+            id: `options:interaction:${option.value}`,
             title: option.title,
-            state: currentInteractionMode === value ? ("on" as const) : undefined,
-          };
-        }),
+            state: currentInteractionMode === option.value ? ("on" as const) : undefined,
+          })),
       },
+      ...(currentInteractionMode === "plan" && supportedPlanWorkflows.length > 0
+        ? [
+            {
+              id: "options-plan-workflow",
+              title: "Plan workflow",
+              subtitle:
+                currentPlanWorkflow ??
+                selectedProviderStatus?.defaultPlanWorkflow ??
+                supportedPlanWorkflows[0],
+              subactions: supportedPlanWorkflows.map((workflow) => ({
+                id: `options:workflow:${workflow}`,
+                title: workflow === "parallel" ? "Parallel" : "Iterative",
+                state:
+                  (currentPlanWorkflow ?? selectedProviderStatus?.defaultPlanWorkflow) === workflow
+                    ? ("on" as const)
+                    : undefined,
+              })),
+            },
+          ]
+        : []),
     ],
-    [currentInteractionMode, currentRuntimeMode, providerOptionDescriptors],
+    [
+      currentInteractionMode,
+      currentRuntimeMode,
+      currentPlanWorkflow,
+      providerOptionDescriptors,
+      selectedProviderStatus?.defaultPlanWorkflow,
+      supportedInteractionModes,
+      supportedPlanWorkflows,
+      supportedRuntimeModes,
+    ],
   );
 
   // ── Menu handlers ────────────────────────────────────────
@@ -684,6 +753,11 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     if (event.startsWith("options:runtime:")) {
       const runtimeMode = event.slice("options:runtime:".length) as RuntimeMode;
       props.onUpdateRuntimeMode(runtimeMode);
+      return;
+    }
+    if (event.startsWith("options:workflow:")) {
+      const workflow = event.slice("options:workflow:".length) as ProviderPlanWorkflow;
+      props.onUpdateInteractionMode("plan", workflow);
       return;
     }
     if (event.startsWith("options:interaction:")) {

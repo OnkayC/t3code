@@ -7,6 +7,7 @@ import {
   ThreadId,
   type ModelSelection,
   type ProviderInteractionMode,
+  type ProviderPlanWorkflow,
   type RuntimeMode,
 } from "@t3tools/contracts";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
@@ -35,6 +36,7 @@ export function useCreateProjectThread() {
       readonly startFromOrigin?: boolean;
       readonly runtimeMode: RuntimeMode;
       readonly interactionMode: ProviderInteractionMode;
+      readonly workflow?: ProviderPlanWorkflow;
       readonly initialMessageText: string;
       readonly initialAttachments: ReadonlyArray<DraftComposerImageAttachment>;
       /** Reuse identifiers from a queued pending task instead of minting new ones. */
@@ -70,7 +72,8 @@ export function useCreateProjectThread() {
           modelSelection: input.modelSelection,
           runtimeMode: input.runtimeMode,
           interactionMode: input.interactionMode,
-          workspaceMode: input.envMode,
+          ...(input.workflow !== undefined ? { workflow: input.workflow } : {}),
+          envMode: input.envMode,
           branch: input.branch,
           worktreePath: input.worktreePath,
           startFromOrigin: input.startFromOrigin ?? false,

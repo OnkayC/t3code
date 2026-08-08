@@ -2,6 +2,11 @@ import { type EnvironmentConnectionPhase } from "@t3tools/client-runtime/connect
 import type { EnvironmentThreadStatus } from "@t3tools/client-runtime/state/threads";
 import { useKeyboardChatComposerInset, useKeyboardScrollToEnd } from "@legendapp/list/keyboard";
 import type { LegendListRef } from "@legendapp/list/react-native";
+import {
+  samePlanReviewResponseScope,
+  type PlanReviewResponseScope,
+  type ProviderQueuedTurn,
+} from "@t3tools/client-runtime/state/providerInteractionRuntime";
 import type {
   ApprovalRequestId,
   EnvironmentId,
@@ -9,6 +14,10 @@ import type {
   ModelSelection,
   OrchestrationThreadShell,
   ProviderApprovalDecision,
+  ProviderPlanReviewDecision,
+  ProviderPlanWorkflow,
+  ProviderUserInputAnswer,
+  ProviderUserInputResponse,
   ProviderInteractionMode,
   RuntimeMode,
   ServerConfig as T3ServerConfig,
@@ -16,11 +25,19 @@ import type {
 } from "@t3tools/contracts";
 import * as Haptics from "expo-haptics";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Platform, View, type GestureResponderEvent } from "react-native";
+import {
+  Platform,
+  Pressable,
+  ScrollView,
+  View,
+  type GestureResponderEvent,
+  useWindowDimensions,
+} from "react-native";
 import { KeyboardController, KeyboardStickyView } from "react-native-keyboard-controller";
 import Animated, { FadeInDown, FadeOut } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { AppText as Text } from "../../components/AppText";
 import type { ComposerEditorHandle } from "../../components/ComposerEditor";
 import type { StatusTone } from "../../components/StatusPill";
 import type { DraftComposerImageAttachment } from "../../lib/composerImages";
@@ -28,10 +45,12 @@ import { CHAT_CONTENT_MAX_WIDTH, type LayoutVariant } from "../../lib/layout";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import type {
   PendingApproval,
+  PendingPlanReview,
   PendingUserInput,
   PendingUserInputDraftAnswer,
   ThreadFeedEntry,
 } from "../../lib/threadActivity";
+import { ProposedPlanCard } from "./ProposedPlanCard";
 import { PendingApprovalCard } from "./PendingApprovalCard";
 import { PendingUserInputCard } from "./PendingUserInputCard";
 import {
@@ -44,6 +63,7 @@ import type { ThreadContentPresentation } from "./threadContentPresentation";
 
 export interface ThreadDetailScreenProps {
   readonly selectedThread: OrchestrationThreadShell;
+  readonly workflow: ProviderPlanWorkflow | null;
   readonly contentPresentation: ThreadContentPresentation;
   readonly screenTone: StatusTone;
   readonly connectionError: string | null;
@@ -54,8 +74,13 @@ export interface ThreadDetailScreenProps {
   readonly respondingApprovalId: ApprovalRequestId | null;
   readonly activePendingUserInput: PendingUserInput | null;
   readonly activePendingUserInputDrafts: Record<string, PendingUserInputDraftAnswer>;
-  readonly activePendingUserInputAnswers: Record<string, string> | null;
+  readonly activePendingUserInputAnswers: Record<string, ProviderUserInputAnswer> | null;
+  readonly activePendingPlanReview: PendingPlanReview | null;
+  readonly respondingPlanReviewScope: PlanReviewResponseScope | null;
   readonly respondingUserInputId: ApprovalRequestId | null;
+  readonly queuedTurns?: ReadonlyArray<ProviderQueuedTurn>;
+  readonly cancellingQueuedTurnIds?: ReadonlyArray<string>;
+  readonly onCancelQueuedTurn?: (turnId: string) => Promise<unknown>;
   readonly draftMessage: string;
   readonly draftAttachments: ReadonlyArray<DraftComposerImageAttachment>;
   readonly connectionStateLabel: EnvironmentConnectionPhase;
@@ -81,8 +106,11 @@ export interface ThreadDetailScreenProps {
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onReconnectEnvironment: () => void;
   readonly onUpdateThreadModelSelection: (modelSelection: ModelSelection) => void;
+  readonly onUpdateThreadInteractionMode: (
+    interactionMode: ProviderInteractionMode,
+    workflow?: ProviderPlanWorkflow,
+  ) => void;
   readonly onUpdateThreadRuntimeMode: (runtimeMode: RuntimeMode) => void;
-  readonly onUpdateThreadInteractionMode: (interactionMode: ProviderInteractionMode) => void;
   readonly onRespondToApproval: (
     requestId: ApprovalRequestId,
     decision: ProviderApprovalDecision,
@@ -97,7 +125,15 @@ export interface ThreadDetailScreenProps {
     questionId: string,
     customAnswer: string,
   ) => void;
-  readonly onSubmitUserInput: () => Promise<unknown>;
+  readonly onChangeUserInputNote: (
+    requestId: ApprovalRequestId,
+    questionId: string,
+    note: string,
+  ) => void;
+  readonly onRespondToUserInput: (response: ProviderUserInputResponse) => Promise<unknown>;
+  readonly onRespondToPlanReview: (decision: ProviderPlanReviewDecision) => Promise<unknown>;
+  readonly onRevertCheckpoint: (turnCount: number) => void;
+  readonly checkpointRevertDisabled?: boolean;
   readonly showContent?: boolean;
 }
 
@@ -173,6 +209,7 @@ function useStreamingHaptics(threadId: ThreadId, feed: ReadonlyArray<ThreadFeedE
 
 export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: ThreadDetailScreenProps) {
   const insets = useSafeAreaInsets();
+  const { height: viewportHeight } = useWindowDimensions();
   const agentLabel = `${props.selectedThread.modelSelection.instanceId} agent`;
   const selectedThreadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
   const composerEditorRef = useRef<ComposerEditorHandle>(null);
@@ -204,6 +241,10 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   const selectedThreadFeed = props.selectedThreadFeed;
   const composerChrome = composerExpanded ? COMPOSER_EXPANDED_CHROME : COMPOSER_COLLAPSED_CHROME;
   const composerOverlapHeight = composerChrome + composerBottomInset;
+  const interactionStackMaxHeight = Math.max(
+    0,
+    viewportHeight - composerOverlapHeight - insets.top - 24,
+  );
   const estimatedOverlayHeight = composerOverlapHeight;
   // The overlay's measured height includes the home-indicator inset (the
   // composer pads it), but contentInsetAdjustmentBehavior="automatic" makes
@@ -374,6 +415,8 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             onHeaderMaterialVisibilityChange={props.onHeaderMaterialVisibilityChange}
             skills={selectedProviderSkills}
             loadEarlier={props.loadEarlier ?? null}
+            onRevertCheckpoint={props.onRevertCheckpoint}
+            checkpointRevertDisabled={props.checkpointRevertDisabled}
           />
         </View>
       ) : (
@@ -391,30 +434,90 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               pushes the resting content floor up by the same amount. */}
           <View ref={composerOverlayRef} onLayout={onComposerLayout} className="w-full">
             <View className="w-full self-center" style={{ maxWidth: contentMaxWidth }}>
-              {props.activePendingApproval || props.activePendingUserInput ? (
+              {props.activePendingApproval ||
+              props.activePendingUserInput ||
+              props.activePendingPlanReview ||
+              (props.queuedTurns?.length ?? 0) > 0 ? (
                 <Animated.View
-                  className="shrink-0 gap-3 px-4 pb-3"
+                  className="shrink-0 px-4 pb-3"
                   entering={FadeInDown.duration(220)}
                   exiting={FadeOut.duration(140)}
                 >
-                  {props.activePendingApproval ? (
-                    <PendingApprovalCard
-                      approval={props.activePendingApproval}
-                      respondingApprovalId={props.respondingApprovalId}
-                      onRespond={props.onRespondToApproval}
-                    />
-                  ) : null}
-                  {props.activePendingUserInput ? (
-                    <PendingUserInputCard
-                      pendingUserInput={props.activePendingUserInput}
-                      drafts={props.activePendingUserInputDrafts}
-                      answers={props.activePendingUserInputAnswers}
-                      respondingUserInputId={props.respondingUserInputId}
-                      onSelectOption={props.onSelectUserInputOption}
-                      onChangeCustomAnswer={props.onChangeUserInputCustomAnswer}
-                      onSubmit={props.onSubmitUserInput}
-                    />
-                  ) : null}
+                  <ScrollView
+                    style={{ maxHeight: interactionStackMaxHeight }}
+                    contentContainerClassName="gap-3"
+                    keyboardShouldPersistTaps="handled"
+                    nestedScrollEnabled
+                    showsVerticalScrollIndicator
+                  >
+                    {props.activePendingPlanReview ? (
+                      <ProposedPlanCard
+                        review={props.activePendingPlanReview}
+                        responding={samePlanReviewResponseScope(props.respondingPlanReviewScope, {
+                          environmentId: props.environmentId,
+                          threadId: props.selectedThread.id,
+                          requestId: props.activePendingPlanReview.requestId,
+                        })}
+                        onRespond={props.onRespondToPlanReview}
+                      />
+                    ) : null}
+                    {props.activePendingApproval ? (
+                      <PendingApprovalCard
+                        approval={props.activePendingApproval}
+                        respondingApprovalId={props.respondingApprovalId}
+                        onRespond={props.onRespondToApproval}
+                      />
+                    ) : null}
+                    {props.activePendingUserInput ? (
+                      <PendingUserInputCard
+                        pendingUserInput={props.activePendingUserInput}
+                        drafts={props.activePendingUserInputDrafts}
+                        answers={props.activePendingUserInputAnswers}
+                        respondingUserInputId={props.respondingUserInputId}
+                        onSelectOption={props.onSelectUserInputOption}
+                        onChangeCustomAnswer={props.onChangeUserInputCustomAnswer}
+                        onChangeNote={props.onChangeUserInputNote}
+                        onRespond={props.onRespondToUserInput}
+                      />
+                    ) : null}
+                    {props.queuedTurns?.map((queued) => {
+                      const cancelling = props.cancellingQueuedTurnIds?.includes(queued.turnId);
+                      const label =
+                        queued.deliveryMode === "follow-up"
+                          ? `Follow-up queued (#${queued.queuePosition})`
+                          : `Steer queued (#${queued.queuePosition})`;
+                      return (
+                        <View
+                          key={queued.turnId}
+                          className="gap-2.5 rounded-[20px] border border-neutral-200 bg-neutral-100 p-4 dark:border-white/6 dark:bg-neutral-900"
+                        >
+                          <Text className="font-t3-bold text-2xs uppercase tracking-[1.1px] text-sky-700 dark:text-sky-300">
+                            Queued turn
+                          </Text>
+                          <Text className="font-t3-bold text-base text-neutral-950 dark:text-neutral-50">
+                            {label}
+                          </Text>
+                          <Text className="text-sm text-neutral-600 dark:text-neutral-300">
+                            Waiting for the current turn to finish before promotion.
+                          </Text>
+                          {props.onCancelQueuedTurn ? (
+                            <Pressable
+                              accessibilityRole="button"
+                              disabled={cancelling}
+                              onPress={() => {
+                                void props.onCancelQueuedTurn?.(queued.turnId);
+                              }}
+                              className="self-start rounded-xl bg-neutral-200 px-3 py-2 dark:bg-neutral-800"
+                            >
+                              <Text className="font-t3-bold text-sm text-neutral-900 dark:text-neutral-100">
+                                {cancelling ? "Cancelling..." : "Cancel"}
+                              </Text>
+                            </Pressable>
+                          ) : null}
+                        </View>
+                      );
+                    })}
+                  </ScrollView>
                 </Animated.View>
               ) : null}
             </View>
@@ -430,6 +533,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               environmentLabel={props.environmentLabel}
               threadSyncPhase={threadSyncPhase}
               selectedThread={props.selectedThread}
+              workflow={props.workflow}
               serverConfig={props.serverConfig}
               queueCount={props.selectedThreadQueueCount}
               activeThreadBusy={props.activeThreadBusy}
