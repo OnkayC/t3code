@@ -185,6 +185,30 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
     expect(
       AgentAwarenessRelay.shouldPublishAgentAwarenessEvent({
         ...base,
+        type: "thread.activity-appended",
+        payload: {
+          threadId: "thread-1" as ThreadId,
+          activity: {
+            kind: "plan.review.requested",
+          },
+        },
+      } as unknown as OrchestrationEvent),
+    ).toBe(true);
+    expect(
+      AgentAwarenessRelay.shouldPublishAgentAwarenessEvent({
+        ...base,
+        type: "thread.activity-appended",
+        payload: {
+          threadId: "thread-1" as ThreadId,
+          activity: {
+            kind: "plan.review.resolved",
+          },
+        },
+      } as unknown as OrchestrationEvent),
+    ).toBe(true);
+    expect(
+      AgentAwarenessRelay.shouldPublishAgentAwarenessEvent({
+        ...base,
         type: "thread.message-sent",
         payload: {
           threadId: "thread-1" as ThreadId,
@@ -198,6 +222,17 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
         type: "thread.turn-start-requested",
         payload: {
           threadId: "thread-1" as ThreadId,
+        },
+      } as unknown as OrchestrationEvent),
+    ).toBe(false);
+    expect(
+      AgentAwarenessRelay.shouldPublishAgentAwarenessEvent({
+        ...base,
+        type: "thread.interaction-mode-change-requested",
+        payload: {
+          threadId: "thread-1" as ThreadId,
+          interactionMode: "plan",
+          requestedAt: now,
         },
       } as unknown as OrchestrationEvent),
     ).toBe(false);
