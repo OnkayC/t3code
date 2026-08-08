@@ -1,4 +1,8 @@
-import { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts";
+import type {
+  ProviderInteractionMode,
+  ProviderPlanWorkflow,
+  RuntimeMode,
+} from "@t3tools/contracts";
 import { memo, type ReactNode } from "react";
 import { EllipsisIcon } from "lucide-react";
 import { Button } from "../ui/button";
@@ -10,13 +14,25 @@ import {
   MenuSeparator as MenuDivider,
   MenuTrigger,
 } from "../ui/menu";
+import { buildInteractionModeOptions } from "./interactionModeOptions";
+
+const runtimeModeLabels: Record<RuntimeMode, string> = {
+  "approval-required": "Supervised",
+  "auto-accept-edits": "Auto-accept edits",
+  auto: "Auto",
+  "full-access": "Full access",
+};
 
 export const CompactComposerControlsMenu = memo(function CompactComposerControlsMenu(props: {
   interactionMode: ProviderInteractionMode;
+  planWorkflow?: ProviderPlanWorkflow | null;
+  defaultPlanWorkflow?: ProviderPlanWorkflow | undefined;
   runtimeMode: RuntimeMode;
-  showInteractionModeToggle: boolean;
+  supportedInteractionModes: ReadonlyArray<ProviderInteractionMode>;
+  supportedPlanWorkflows: ReadonlyArray<ProviderPlanWorkflow>;
+  supportedRuntimeModes: ReadonlyArray<RuntimeMode>;
   traitsMenuContent?: ReactNode;
-  onToggleInteractionMode: () => void;
+  onInteractionModeChange: (mode: ProviderInteractionMode, workflow?: ProviderPlanWorkflow) => void;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
 }) {
   return (
@@ -40,18 +56,40 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
             <MenuDivider />
           </>
         ) : null}
-        {props.showInteractionModeToggle ? (
+        {props.supportedInteractionModes.length > 1 ? (
           <>
             <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Mode</div>
             <MenuRadioGroup
               value={props.interactionMode}
               onValueChange={(value) => {
                 if (!value || value === props.interactionMode) return;
-                props.onToggleInteractionMode();
+                props.onInteractionModeChange(value as ProviderInteractionMode);
               }}
             >
-              <MenuRadioItem value="default">Chat</MenuRadioItem>
-              <MenuRadioItem value="plan">Plan</MenuRadioItem>
+              {buildInteractionModeOptions(props.supportedInteractionModes).map((option) => (
+                <MenuRadioItem key={option.value} value={option.value}>
+                  {option.label}
+                </MenuRadioItem>
+              ))}
+            </MenuRadioGroup>
+            <MenuDivider />
+          </>
+        ) : null}
+        {props.interactionMode === "plan" && props.supportedPlanWorkflows.length > 0 ? (
+          <>
+            <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Workflow</div>
+            <MenuRadioGroup
+              value={props.planWorkflow ?? props.defaultPlanWorkflow}
+              onValueChange={(value) => {
+                if (!value || value === props.planWorkflow) return;
+                props.onInteractionModeChange("plan", value as ProviderPlanWorkflow);
+              }}
+            >
+              {props.supportedPlanWorkflows.map((workflow) => (
+                <MenuRadioItem key={workflow} value={workflow}>
+                  {workflow === "parallel" ? "Parallel plan" : "Iterative plan"}
+                </MenuRadioItem>
+              ))}
             </MenuRadioGroup>
             <MenuDivider />
           </>
@@ -64,10 +102,11 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
             props.onRuntimeModeChange(value as RuntimeMode);
           }}
         >
-          <MenuRadioItem value="approval-required">Supervised</MenuRadioItem>
-          <MenuRadioItem value="auto-accept-edits">Auto-accept edits</MenuRadioItem>
-          <MenuRadioItem value="auto">Auto</MenuRadioItem>
-          <MenuRadioItem value="full-access">Full access</MenuRadioItem>
+          {props.supportedRuntimeModes.map((mode) => (
+            <MenuRadioItem key={mode} value={mode}>
+              {runtimeModeLabels[mode]}
+            </MenuRadioItem>
+          ))}
         </MenuRadioGroup>
       </MenuPopup>
     </Menu>

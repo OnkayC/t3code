@@ -14,8 +14,11 @@ import {
   deriveTurnPlans,
   derivePendingApprovals,
   derivePendingUserInputs,
+  derivePendingPlanReview,
+  planReviewMatchesProposedPlan,
   deriveTimelineEntries,
   deriveWorkLogEntries,
+  PROVIDER_OPTIONS,
   findLatestProposedPlan,
   hasActionableProposedPlan,
   isLatestTurnSettled,
@@ -23,6 +26,7 @@ import {
   workEntryIndicatesToolNeutralStatus,
   workEntryIndicatesToolSuccess,
 } from "./session-logic";
+import { buildPendingUserInputAnswers } from "./pendingUserInput";
 
 let nextActivityId = 0;
 
@@ -60,6 +64,16 @@ function makeActivity(overrides: {
     ...(overrides.sequence !== undefined ? { sequence: overrides.sequence } : {}),
   };
 }
+
+describe("PROVIDER_OPTIONS", () => {
+  it("registers OMP as an available provider", () => {
+    expect(PROVIDER_OPTIONS).toContainEqual({
+      value: "omp",
+      label: "OMP",
+      available: true,
+    });
+  });
+});
 
 describe("derivePendingApprovals", () => {
   it("tracks open approvals and removes resolved ones", () => {
@@ -337,6 +351,90 @@ describe("derivePendingUserInputs", () => {
     ]);
   });
 
+  it("keeps free-form questions when allowCustom is omitted", () => {
+    const pending = derivePendingUserInputs([
+      makeActivity({
+        id: "user-input-free-form",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "user-input.requested",
+        summary: "User input requested",
+        tone: "info",
+        payload: {
+          requestId: "req-user-input-free-form",
+          questions: [
+            {
+              id: "details",
+              question: "What should change?",
+              options: [],
+              multiSelect: false,
+            },
+          ],
+        },
+      }),
+    ]);
+
+    expect(pending).toEqual([
+      {
+        requestId: "req-user-input-free-form",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        questions: [
+          {
+            id: "details",
+            question: "What should change?",
+            options: [],
+            multiSelect: false,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("exposes projected OMP note capability without changing other providers", () => {
+    const makeUserInputRequest = (requestId: string, supportsNote?: true) =>
+      makeActivity({
+        id: `${requestId}-open`,
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "user-input.requested",
+        summary: "User input requested",
+        payload: {
+          requestId,
+          questions: [
+            {
+              id: "target",
+              question: "Which target should be used?",
+              options: [{ label: "Web" }],
+            },
+          ],
+          ...(supportsNote ? { supportsNote } : {}),
+        },
+      });
+
+    const pendingRequests = derivePendingUserInputs([
+      makeUserInputRequest("req-omp-user-input", true),
+      makeUserInputRequest("req-codex-user-input"),
+    ]);
+    const ompRequest = pendingRequests.find(
+      (request) => request.requestId === "req-omp-user-input",
+    );
+    const codexRequest = pendingRequests.find(
+      (request) => request.requestId === "req-codex-user-input",
+    );
+
+    expect(ompRequest?.supportsNote).toBe(true);
+    expect(codexRequest?.supportsNote).toBeUndefined();
+    expect(
+      buildPendingUserInputAnswers(
+        ompRequest?.questions ?? [],
+        {
+          target: { selectedOptionLabels: ["Web"], note: "Keep parity" },
+        },
+        ompRequest?.supportsNote === true,
+      ),
+    ).toEqual({
+      target: { selectedOptions: ["Web"], note: "Keep parity" },
+    });
+  });
+
   it("clears stale pending user-input prompts when the provider reports an orphaned request", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
@@ -378,6 +476,82 @@ describe("derivePendingUserInputs", () => {
     ];
 
     expect(derivePendingUserInputs(activities)).toEqual([]);
+  });
+});
+
+describe("derivePendingPlanReview", () => {
+  it.each(["stale", "aborted"] as const)(
+    "clears a pending plan review after a correlated %s terminal activity",
+    (outcome) => {
+      const activities: OrchestrationThreadActivity[] = [
+        makeActivity({
+          id: `plan-review-open-${outcome}`,
+          createdAt: "2026-02-23T00:00:01.000Z",
+          kind: "plan.review.requested",
+          summary: "Plan review requested",
+          tone: "info",
+          payload: {
+            requestId: "plan-review-1",
+            title: "Plan",
+            planArtifactId: "plan-artifact",
+            planArtifactUrl: "local://plan-artifact",
+            planMarkdown: "# Plan",
+            allowedContextStrategies: ["fresh"],
+            executionModels: [],
+          },
+        }),
+        makeActivity({
+          id: `plan-review-${outcome}`,
+          createdAt: "2026-02-23T00:00:02.000Z",
+          kind: "plan.review.resolved",
+          summary: "Provider plan review response failed",
+          tone: "error",
+          payload: {
+            requestId: "plan-review-1",
+            outcome,
+            detail: "Provider plan review response failed",
+          },
+        }),
+      ];
+
+      expect(derivePendingPlanReview(activities)).toBeNull();
+    },
+  );
+
+  it("retains the request turn for proposed-plan correlation", () => {
+    const pending = derivePendingPlanReview([
+      makeActivity({
+        id: "plan-review-with-turn",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "plan.review.requested",
+        summary: "Plan review requested",
+        tone: "info",
+        turnId: "turn-current-plan",
+        payload: {
+          requestId: "plan-review-with-turn",
+          title: "Plan",
+          planArtifactId: "plan-artifact",
+          planArtifactUrl: "local://plan-artifact",
+          planMarkdown: "# Unchanged plan",
+          allowedContextStrategies: ["fresh"],
+          executionModels: [],
+        },
+      }),
+    ]);
+
+    expect(pending?.turnId).toBe("turn-current-plan");
+    expect(
+      pending &&
+        planReviewMatchesProposedPlan(pending, {
+          turnId: TurnId.make("turn-current-plan"),
+        }),
+    ).toBe(true);
+    expect(
+      pending &&
+        planReviewMatchesProposedPlan(pending, {
+          turnId: TurnId.make("turn-older-identical-plan"),
+        }),
+    ).toBe(false);
   });
 });
 
@@ -1119,6 +1293,41 @@ describe("deriveWorkLogEntries", () => {
 
     const [entry] = deriveWorkLogEntries(activities);
     expect(entry?.command).toBe("bun run lint");
+  });
+
+  it("consumes canonical command and file inputs without provider-specific parsing", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "canonical-command-tool",
+        kind: "tool.completed",
+        summary: "bash",
+        payload: {
+          itemType: "command_execution",
+          data: {
+            item: { input: { command: ["bun", "run", "lint"] } },
+          },
+        },
+      }),
+      makeActivity({
+        id: "canonical-file-tool",
+        kind: "tool.completed",
+        summary: "edit",
+        payload: {
+          itemType: "file_change",
+          data: {
+            item: { input: { path: "apps/web/src/App.tsx" } },
+          },
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities);
+    expect(entries.find((entry) => entry.id === "canonical-command-tool")?.command).toBe(
+      "bun run lint",
+    );
+    expect(entries.find((entry) => entry.id === "canonical-file-tool")?.changedFiles).toEqual([
+      "apps/web/src/App.tsx",
+    ]);
   });
 
   it("extracts failed tool lifecycle status from item payloads", () => {

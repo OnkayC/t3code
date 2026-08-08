@@ -121,6 +121,7 @@ export default defineConfig({
       "t3code/no-inline-schema-compile": "warn",
       "t3code/no-manual-effect-runtime-in-tests": "error",
       "t3code/no-native-title-tooltip": "error",
+      "t3code/no-omp-acp-dependency": "error",
       "t3code/namespace-node-imports": "error",
     },
     options: {

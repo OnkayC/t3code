@@ -13,12 +13,14 @@ interface PendingActionState {
   canAdvance: boolean;
   isResponding: boolean;
   isComplete: boolean;
+  canSubmit: boolean;
 }
 
 interface ComposerPrimaryActionsProps {
   compact: boolean;
   pendingAction: PendingActionState | null;
   isRunning: boolean;
+  supportsQueuedFollowUp: boolean;
   showPlanFollowUpPrompt: boolean;
   promptHasText: boolean;
   isSendBusy: boolean;
@@ -54,6 +56,14 @@ export const formatPendingPrimaryActionLabel = (input: {
   return input.questionIndex > 0 ? "Submit answers" : "Submit answer";
 };
 
+export function shouldShowQueuedTurnSubmitAction(input: {
+  readonly isRunning: boolean;
+  readonly hasSendableContent: boolean;
+  readonly supportsQueuedFollowUp: boolean;
+}): boolean {
+  return input.isRunning && input.hasSendableContent && input.supportsQueuedFollowUp;
+}
+
 const preventPointerFocus: PointerEventHandler<HTMLElement> = (event) => {
   event.preventDefault();
 };
@@ -63,6 +73,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   pendingAction,
   isRunning,
   showPlanFollowUpPrompt,
+  supportsQueuedFollowUp,
   promptHasText,
   isSendBusy,
   sendDisabledReason,
@@ -84,6 +95,11 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   const stageBackdropVariant = useSidebarStageBackdropVariant(
     environmentIdentificationMode === "artwork",
   );
+  const showQueuedTurnSubmitAction = shouldShowQueuedTurnSubmitAction({
+    isRunning,
+    hasSendableContent,
+    supportsQueuedFollowUp,
+  });
 
   const renderStopGenerationButton = (insidePendingAction: boolean) => (
     <button
@@ -147,7 +163,9 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
           disabled={
             isEnvironmentUnavailable ||
             pendingAction.isResponding ||
-            (pendingAction.isLastQuestion ? !pendingAction.isComplete : !pendingAction.canAdvance)
+            (pendingAction.isLastQuestion
+              ? !pendingAction.isComplete || !pendingAction.canSubmit
+              : !pendingAction.canAdvance)
           }
         >
           {formatPendingPrimaryActionLabel({
@@ -246,7 +264,9 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
                 ? "Preparing worktree"
                 : isSendBusy
                   ? "Sending"
-                  : "Send message"
+                  : showQueuedTurnSubmitAction
+                    ? "Queue follow-up"
+                    : "Send message"
       }
     >
       {stageBackdropVariant ? (
@@ -277,7 +297,9 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   return (
     <>
       {renderStopGenerationButton(false)}
-      {showSendWhileRunning && hasSendableContent ? sendButton : null}
+      {(showSendWhileRunning && hasSendableContent) || showQueuedTurnSubmitAction
+        ? sendButton
+        : null}
     </>
   );
 });

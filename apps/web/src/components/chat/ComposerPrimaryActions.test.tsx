@@ -15,7 +15,11 @@ vi.mock("../SidebarStageBackdrop", () => ({
   useSidebarStageBackdropVariant: (enabled = true) => (enabled ? stageArtworkState.variant : null),
 }));
 
-import { ComposerPrimaryActions, formatPendingPrimaryActionLabel } from "./ComposerPrimaryActions";
+import {
+  ComposerPrimaryActions,
+  formatPendingPrimaryActionLabel,
+  shouldShowQueuedTurnSubmitAction,
+} from "./ComposerPrimaryActions";
 
 function renderPendingActions(isRunning: boolean) {
   return renderToStaticMarkup(
@@ -27,8 +31,10 @@ function renderPendingActions(isRunning: boolean) {
         canAdvance: true,
         isResponding: false,
         isComplete: true,
+        canSubmit: true,
       },
       isRunning,
+      supportsQueuedFollowUp: false,
       showPlanFollowUpPrompt: false,
       promptHasText: false,
       isSendBusy: false,
@@ -50,6 +56,7 @@ function renderStandaloneStop() {
       compact: true,
       pendingAction: null,
       isRunning: true,
+      supportsQueuedFollowUp: false,
       showPlanFollowUpPrompt: false,
       promptHasText: false,
       isSendBusy: false,
@@ -71,6 +78,7 @@ function renderRunningActions(showSendWhileRunning: boolean, hasSendableContent:
       compact: true,
       pendingAction: null,
       isRunning: true,
+      supportsQueuedFollowUp: false,
       showPlanFollowUpPrompt: false,
       promptHasText: hasSendableContent,
       isSendBusy: false,
@@ -93,6 +101,7 @@ function renderSendButton(sendDisabledReason: string | null = null) {
       compact: true,
       pendingAction: null,
       isRunning: false,
+      supportsQueuedFollowUp: false,
       showPlanFollowUpPrompt: false,
       promptHasText: true,
       isSendBusy: false,
@@ -200,6 +209,39 @@ describe("formatPendingPrimaryActionLabel", () => {
         questionIndex: 5,
       }),
     ).toBe("Submit answers");
+  });
+});
+
+describe("shouldShowQueuedTurnSubmitAction", () => {
+  it("exposes submit only for a capable busy provider with sendable content", () => {
+    expect(
+      shouldShowQueuedTurnSubmitAction({
+        isRunning: true,
+        hasSendableContent: true,
+        supportsQueuedFollowUp: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldShowQueuedTurnSubmitAction({
+        isRunning: true,
+        hasSendableContent: true,
+        supportsQueuedFollowUp: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowQueuedTurnSubmitAction({
+        isRunning: true,
+        hasSendableContent: false,
+        supportsQueuedFollowUp: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowQueuedTurnSubmitAction({
+        isRunning: false,
+        hasSendableContent: true,
+        supportsQueuedFollowUp: true,
+      }),
+    ).toBe(false);
   });
 });
 
