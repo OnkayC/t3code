@@ -5,6 +5,7 @@ import type {
   ModelSelection,
   ProjectReadFileResult,
   ProviderInteractionMode,
+  ProviderPlanWorkflow,
   ProviderOptionSelection,
   RuntimeMode,
   ServerProviderSkill,
@@ -84,6 +85,9 @@ import {
 } from "./new-task-context-presentation";
 
 type WorkspaceMode = "local" | "worktree";
+const DEFAULT_INTERACTION_MODES = ["default"] as const;
+const LEGACY_PLAN_INTERACTION_MODES = ["default", "plan"] as const;
+const NO_PLAN_WORKFLOWS: ReadonlyArray<ProviderPlanWorkflow> = [];
 
 const BRANCH_SEARCH_DEBOUNCE_MS = 150;
 
@@ -142,8 +146,13 @@ type NewTaskFlowContextValue = {
   readonly availableBranches: ReadonlyArray<VcsRef>;
   readonly currentCheckoutBranchName: string | null;
   readonly runtimeMode: RuntimeMode;
+  readonly supportedRuntimeModes: ReadonlyArray<RuntimeMode> | undefined;
   readonly interactionMode: ProviderInteractionMode;
+  readonly supportedInteractionModes: ReadonlyArray<ProviderInteractionMode>;
   readonly planModeEnabled: boolean;
+  readonly workflow: ProviderPlanWorkflow | null;
+  readonly supportedPlanWorkflows: ReadonlyArray<ProviderPlanWorkflow>;
+  readonly defaultPlanWorkflow: ProviderPlanWorkflow | undefined;
   readonly expandedProvider: string | null;
   readonly environments: ReadonlyArray<{
     readonly environmentId: EnvironmentId;
@@ -180,7 +189,10 @@ type NewTaskFlowContextValue = {
   readonly loadBranches: () => void;
   readonly loadMoreBranches: () => void;
   readonly setRuntimeMode: (value: RuntimeMode) => void;
-  readonly setInteractionMode: (value: ProviderInteractionMode) => void;
+  readonly setInteractionMode: (
+    value: ProviderInteractionMode,
+    workflow?: ProviderPlanWorkflow,
+  ) => void;
   readonly setSelectedModelOptions: (
     value: ReadonlyArray<ProviderOptionSelection> | undefined,
   ) => void;
@@ -401,9 +413,8 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     selectedEnvironmentServerConfig?.settings.newWorktreesStartFromOrigin ??
     true;
   const runtimeMode = selectedProjectDraft.runtimeMode ?? DEFAULT_RUNTIME_MODE;
-  const interactionMode = planModeEnabled
-    ? (selectedProjectDraft.interactionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE)
-    : DEFAULT_PROVIDER_INTERACTION_MODE;
+  const interactionMode = selectedProjectDraft.interactionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE;
+  const workflow = selectedProjectDraft.workflow ?? null;
 
   // Stored selections only count while their provider is usable on the
   // server; otherwise the server's default model wins instead of silently
@@ -451,6 +462,44 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       )?.skills ?? [],
     [selectedEnvironmentServerConfig, selectedModel?.instanceId],
   );
+  const selectedProviderStatus = useMemo(
+    () =>
+      selectedEnvironmentServerConfig?.providers.find(
+        (provider) => provider.instanceId === selectedModel?.instanceId,
+      ) ?? null,
+    [selectedEnvironmentServerConfig, selectedModel?.instanceId],
+  );
+  const supportedInteractionModes =
+    selectedProviderStatus?.supportedInteractionModes &&
+    selectedProviderStatus.supportedInteractionModes.length > 0
+      ? selectedProviderStatus.supportedInteractionModes
+      : planModeEnabled
+        ? LEGACY_PLAN_INTERACTION_MODES
+        : DEFAULT_INTERACTION_MODES;
+  const supportedPlanWorkflows =
+    selectedProviderStatus?.supportedPlanWorkflows ?? NO_PLAN_WORKFLOWS;
+
+  const setRuntimeMode = useCallback(
+    (value: RuntimeMode) => {
+      if (selectedProjectDraftKey) {
+        updateComposerDraftSettings(selectedProjectDraftKey, { runtimeMode: value });
+      }
+    },
+    [selectedProjectDraftKey],
+  );
+
+  useEffect(() => {
+    if (
+      selectedProviderStatus?.supportedRuntimeModes &&
+      selectedProviderStatus.supportedRuntimeModes.length > 0 &&
+      !selectedProviderStatus.supportedRuntimeModes.includes(runtimeMode)
+    ) {
+      const fallback = selectedProviderStatus.supportedRuntimeModes[0];
+      if (fallback) {
+        setRuntimeMode(fallback);
+      }
+    }
+  }, [selectedProviderStatus?.supportedRuntimeModes, runtimeMode, setRuntimeMode]);
   const setSelectedModelKey = useCallback(
     // Options ride along in the same write: a follow-up setSelectedModelOptions
     // call would rebuild the selection from the stale pre-switch model.
@@ -776,18 +825,13 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     workspaceMode,
   ]);
 
-  const setRuntimeMode = useCallback(
-    (value: RuntimeMode) => {
-      if (selectedProjectDraftKey) {
-        updateComposerDraftSettings(selectedProjectDraftKey, { runtimeMode: value });
-      }
-    },
-    [selectedProjectDraftKey],
-  );
   const setInteractionMode = useCallback(
-    (value: ProviderInteractionMode) => {
+    (value: ProviderInteractionMode, workflow?: ProviderPlanWorkflow) => {
       if (selectedProjectDraftKey) {
-        updateComposerDraftSettings(selectedProjectDraftKey, { interactionMode: value });
+        updateComposerDraftSettings(selectedProjectDraftKey, {
+          interactionMode: value,
+          ...(workflow !== undefined ? { workflow } : {}),
+        });
       }
     },
     [selectedProjectDraftKey],
@@ -807,6 +851,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
         modelSelection: message.modelSelection,
         runtimeMode: message.runtimeMode,
         interactionMode: message.interactionMode,
+        ...(message.workflow !== undefined ? { workflow: message.workflow } : {}),
         workspaceSelection: {
           mode: message.creation.workspaceMode,
           branch: message.creation.branch,
@@ -866,12 +911,8 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
         attachments: draft.attachments,
         modelSelection: draftModelSelection,
         runtimeMode: draft.runtimeMode ?? DEFAULT_RUNTIME_MODE,
-        interactionMode: resolvePendingTaskInteractionMode({
-          preferenceLoaded: planModePreferenceLoaded,
-          planModeEnabled,
-          draftInteractionMode: draft.interactionMode,
-          queuedInteractionMode: editingPendingTask?.interactionMode,
-        }),
+        interactionMode: draft.interactionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE,
+        ...(draft.workflow !== undefined ? { workflow: draft.workflow } : {}),
         creation: {
           projectId: selectedProject.id,
           ...(projectTitle !== undefined ? { projectTitle } : {}),
@@ -1020,8 +1061,13 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       availableBranches,
       currentCheckoutBranchName,
       runtimeMode,
+      supportedRuntimeModes: selectedProviderStatus?.supportedRuntimeModes,
       interactionMode,
+      supportedInteractionModes,
       planModeEnabled,
+      workflow,
+      supportedPlanWorkflows,
+      defaultPlanWorkflow: selectedProviderStatus?.defaultPlanWorkflow,
       expandedProvider,
       environments,
       selectedProject,
@@ -1073,7 +1119,12 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       filteredBranches,
       finishEditingPendingTask,
       interactionMode,
+      supportedInteractionModes,
+      selectedProviderStatus?.defaultPlanWorkflow,
+      selectedProviderStatus?.supportedRuntimeModes,
       planModeEnabled,
+      workflow,
+      supportedPlanWorkflows,
       loadBranches,
       loadMoreBranches,
       projectScopes,

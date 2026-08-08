@@ -52,6 +52,7 @@ function threadDetailToShell(
     modelSelection: thread.modelSelection,
     runtimeMode: thread.runtimeMode,
     interactionMode: thread.interactionMode,
+    ...(thread.workflow !== undefined ? { workflow: thread.workflow } : {}),
     branch: thread.branch,
     worktreePath: thread.worktreePath,
     latestTurn: thread.latestTurn,

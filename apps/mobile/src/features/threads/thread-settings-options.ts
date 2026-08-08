@@ -1,4 +1,9 @@
-import type { ProviderOptionDescriptor, RuntimeMode } from "@t3tools/contracts";
+import type {
+  ProviderInteractionMode,
+  ProviderOptionDescriptor,
+  ProviderPlanWorkflow,
+  RuntimeMode,
+} from "@t3tools/contracts";
 
 /**
  * Desktop-oriented effort keywords that don't belong in the phone picker.
@@ -33,6 +38,45 @@ export const RUNTIME_MODE_CHOICES: ReadonlyArray<{
     mode: "full-access",
     label: "Full access",
     description: "Allow commands and edits without prompts.",
+  },
+];
+
+export const INTERACTION_MODE_CHOICES: ReadonlyArray<{
+  readonly mode: ProviderInteractionMode;
+  readonly label: string;
+  readonly description: string;
+}> = [
+  {
+    mode: "default",
+    label: "Build",
+    description: "Build normally with the selected provider.",
+  },
+  {
+    mode: "plan",
+    label: "Plan",
+    description: "Plan the work before execution.",
+  },
+  {
+    mode: "plan-paused",
+    label: "Plan paused",
+    description: "Plan execution is paused. Resume planning or return to build mode.",
+  },
+];
+
+export const PLAN_WORKFLOW_CHOICES: ReadonlyArray<{
+  readonly workflow: ProviderPlanWorkflow;
+  readonly label: string;
+  readonly description: string;
+}> = [
+  {
+    workflow: "parallel",
+    label: "Parallel plan",
+    description: "Plan with a dedicated execution model.",
+  },
+  {
+    workflow: "iterative",
+    label: "Iterative plan",
+    description: "Plan and execute in the same conversation.",
   },
 ];
 

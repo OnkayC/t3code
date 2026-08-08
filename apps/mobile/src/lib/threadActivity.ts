@@ -3,14 +3,18 @@ import {
   isToolLifecycleItemType,
   ProviderApprovalOption,
   ProviderRequestKind,
-} from "@t3tools/contracts";
-import type {
-  OrchestrationLatestTurn,
-  OrchestrationThread,
-  OrchestrationThreadActivity,
-  ToolLifecycleItemType,
-  TurnId,
-  UserInputQuestion,
+  type OrchestrationLatestTurn,
+  type OrchestrationThread,
+  type OrchestrationThreadActivity,
+  type PlanReviewRequestedPayload,
+  type ProviderApprovalDecision,
+  type ProviderPlanExecutionModel,
+  type ProviderPlanReviewContextStrategy,
+  type ProviderUserInputAction,
+  type ProviderUserInputAnswer,
+  type ToolLifecycleItemType,
+  type TurnId,
+  type UserInputQuestion,
 } from "@t3tools/contracts";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 
@@ -20,11 +24,19 @@ import * as Schema from "effect/Schema";
 
 export interface PendingApproval {
   readonly requestId: ApprovalRequestId;
-  readonly requestKind: ProviderRequestKind;
+  readonly requestKind: ProviderRequestKind | "tool";
   readonly createdAt: string;
   readonly detail?: string;
   readonly appName?: string;
   readonly options?: ReadonlyArray<ProviderApprovalOption>;
+  readonly toolName?: string;
+  readonly approvalMode?: string;
+  readonly tier?: string;
+  readonly args?: unknown;
+  readonly reason?: string;
+  readonly details?: ReadonlyArray<string>;
+  readonly providerSafetyChecks?: ReadonlyArray<string>;
+  readonly allowedDecisions?: ReadonlyArray<ProviderApprovalDecision>;
 }
 
 const isProviderRequestKind = Schema.is(ProviderRequestKind);
@@ -34,11 +46,19 @@ export interface PendingUserInput {
   readonly requestId: ApprovalRequestId;
   readonly createdAt: string;
   readonly questions: ReadonlyArray<UserInputQuestion>;
+  readonly allowedActions?: ReadonlyArray<ProviderUserInputAction>;
+  readonly timeout?: number;
+  readonly supportsNote?: boolean;
 }
-
 export interface PendingUserInputDraftAnswer {
   readonly selectedOptionLabels?: ReadonlyArray<string>;
   readonly customAnswer?: string;
+  readonly note?: string;
+}
+
+export interface PendingPlanReview extends PlanReviewRequestedPayload {
+  readonly requestId: ApprovalRequestId;
+  readonly createdAt: string;
 }
 
 export interface ThreadFeedActivity {
@@ -101,6 +121,7 @@ type RawThreadFeedEntry =
       readonly id: string;
       readonly createdAt: string;
       readonly message: OrchestrationThread["messages"][number];
+      readonly checkpointTurnCount?: number;
     }
   | {
       readonly type: "activity";
@@ -160,6 +181,8 @@ function requestKindFromRequestType(requestType: unknown): PendingApproval["requ
       return "file-change";
     case "mcp_elicitation_approval":
       return "mcp-elicitation";
+    case "tool_approval":
+      return "tool";
     default:
       return null;
   }
@@ -197,7 +220,6 @@ function parseUserInputQuestions(
       const question = entry as Record<string, unknown>;
       if (
         typeof question.id !== "string" ||
-        typeof question.header !== "string" ||
         typeof question.question !== "string" ||
         !Array.isArray(question.options)
       ) {
@@ -207,24 +229,29 @@ function parseUserInputQuestions(
         .map<UserInputQuestion["options"][number] | null>((option) => {
           if (!option || typeof option !== "object") return null;
           const record = option as Record<string, unknown>;
-          if (typeof record.label !== "string" || typeof record.description !== "string") {
-            return null;
-          }
+          if (typeof record.label !== "string") return null;
           return {
             label: record.label,
-            description: record.description,
+            ...(typeof record.description === "string" ? { description: record.description } : {}),
+            ...(typeof record.preview === "string" ? { preview: record.preview } : {}),
           };
         })
         .filter((option): option is UserInputQuestion["options"][number] => option !== null);
-      if (options.length === 0) {
+      if (options.length === 0 && question.allowCustom !== true) {
         return null;
       }
       return {
         id: question.id,
-        header: question.header,
+        ...(typeof question.header === "string" ? { header: question.header } : {}),
         question: question.question,
         options,
         multiSelect: question.multiSelect === true,
+        ...(typeof question.recommended === "number" &&
+        Number.isInteger(question.recommended) &&
+        question.recommended >= 0
+          ? { recommended: question.recommended }
+          : {}),
+        ...(typeof question.allowCustom === "boolean" ? { allowCustom: question.allowCustom } : {}),
       };
     })
     .filter((question): question is UserInputQuestion => question !== null);
@@ -256,16 +283,23 @@ function resolvePendingUserInputAnswer(
   question: UserInputQuestion,
   draft: PendingUserInputDraftAnswer | undefined,
 ): string | ReadonlyArray<string> | null {
-  const customAnswer = normalizeDraftAnswer(draft?.customAnswer);
+  const customAnswer =
+    question.allowCustom !== false ? normalizeDraftAnswer(draft?.customAnswer) : null;
   if (customAnswer) {
     return customAnswer;
   }
 
-  const selectedOptionLabels = normalizeSelectedOptionLabels(draft?.selectedOptionLabels);
+  const optionLabels = normalizeSelectedOptionLabels(draft?.selectedOptionLabels);
   if (question.multiSelect) {
-    return selectedOptionLabels.length > 0 ? selectedOptionLabels : null;
+    return optionLabels.length > 0 ? optionLabels : null;
   }
-  return selectedOptionLabels[0] ?? null;
+  return optionLabels[0] ?? null;
+}
+
+function selectedOptionLabels(
+  draft: PendingUserInputDraftAnswer | undefined,
+): ReadonlyArray<string> {
+  return normalizeSelectedOptionLabels(draft?.selectedOptionLabels);
 }
 
 /** Codex children settle via task.updated (idle/failed/interrupted), never
@@ -293,36 +327,19 @@ function isTerminalBypassUpdate(activity: OrchestrationThreadActivity): boolean 
   );
 }
 
-/**
- * Quiet-timeline guarantee (mirrors web's session-logic): agent-internal
- * activity lives in the Agents sheet, not the work log. Terminal rows are
- * kept — with no Agents surface on mobile they are the terminal signal
- * (a surface that hides rows must keep its own terminal signal). That means
- * task.completed (Claude) AND terminal bypassed task.updated (Codex, whose
- * children never emit task.completed — review finding).
- */
+/** Agent-owned work belongs exclusively to the Agents sheet. Background
+ * tasks remain in the ordinary work log. */
 function isAgentInternalActivity(activity: OrchestrationThreadActivity): boolean {
   const payload =
     activity.payload && typeof activity.payload === "object"
       ? (activity.payload as Record<string, unknown>)
       : null;
-  if (!payload) {
-    return false;
-  }
-  const isTerminalTaskRow = activity.kind === "task.completed" || isTerminalBypassUpdate(activity);
-  if (payload.timelineBypass === true && !isTerminalTaskRow) {
-    return true;
-  }
-  // agentId marks ownership, not "hide me": a NESTED AGENT's terminal row is
-  // the only signal mobile gets (no Agents sheet), so it stays. Only an
-  // agent's own background work (stamped "background") is internal — same
-  // rule as web (review finding: hiding on agentId alone dropped nested
-  // completions with no replacement UI).
-  const ownedByAgent = typeof payload.agentId === "string" && payload.agentId.trim().length > 0;
-  if (!ownedByAgent) {
-    return false;
-  }
-  return !(isTerminalTaskRow && payload.agentKind === "agent");
+  if (!payload) return false;
+  return (
+    payload.agentKind === "agent" ||
+    payload.timelineBypass === true ||
+    (typeof payload.agentId === "string" && payload.agentId.trim().length > 0)
+  );
 }
 
 function deriveWorkLogEntries(
@@ -1398,6 +1415,18 @@ export function derivePendingApprovals(
       : undefined;
 
     if (activity.kind === "approval.requested" && requestId && requestKind) {
+      const allowedDecisions: ProviderApprovalDecision[] | undefined = Array.isArray(
+        payload?.allowedDecisions,
+      )
+        ? payload.allowedDecisions.filter(
+            (decision): decision is ProviderApprovalDecision =>
+              decision === "accept" ||
+              decision === "acceptForSession" ||
+              decision === "acceptAlways" ||
+              decision === "decline" ||
+              decision === "cancel",
+          )
+        : undefined;
       openByRequestId.set(requestId, {
         requestId,
         requestKind,
@@ -1405,6 +1434,28 @@ export function derivePendingApprovals(
         ...(detail ? { detail } : {}),
         ...(appName ? { appName } : {}),
         ...(options && options.length > 0 ? { options } : {}),
+        ...(typeof payload?.toolName === "string" ? { toolName: payload.toolName } : {}),
+        ...(typeof payload?.approvalMode === "string"
+          ? { approvalMode: payload.approvalMode }
+          : {}),
+        ...(typeof payload?.tier === "string" ? { tier: payload.tier } : {}),
+        ...(payload && "args" in payload ? { args: payload.args } : {}),
+        ...(typeof payload?.reason === "string" ? { reason: payload.reason } : {}),
+        ...(Array.isArray(payload?.details)
+          ? {
+              details: payload.details.filter(
+                (value): value is string => typeof value === "string",
+              ),
+            }
+          : {}),
+        ...(Array.isArray(payload?.providerSafetyChecks)
+          ? {
+              providerSafetyChecks: payload.providerSafetyChecks.filter(
+                (value): value is string => typeof value === "string",
+              ),
+            }
+          : {}),
+        ...(allowedDecisions ? { allowedDecisions } : {}),
       });
       continue;
     }
@@ -1444,10 +1495,23 @@ export function derivePendingUserInputs(
       if (!questions) {
         continue;
       }
+      const allowedActions = Array.isArray(payload?.allowedActions)
+        ? payload.allowedActions.filter(
+            (action): action is ProviderUserInputAction =>
+              action === "submit" || action === "chat" || action === "cancel",
+          )
+        : undefined;
+      const supportsNote =
+        ("provider" in activity && (activity as { provider?: string }).provider === "omp") ||
+        payload?.supportsNote === true ||
+        payload?.provider === "omp";
       openByRequestId.set(requestId, {
         requestId,
         createdAt: activity.createdAt,
         questions,
+        ...(allowedActions ? { allowedActions } : {}),
+        ...(typeof payload?.timeout === "number" ? { timeout: payload.timeout } : {}),
+        ...(supportsNote ? { supportsNote: true } : {}),
       });
       continue;
     }
@@ -1466,7 +1530,68 @@ export function derivePendingUserInputs(
     }
   }
 
-  return Arr.sortWith(openByRequestId.values(), (s) => new Date(s.createdAt), Order.Date);
+  return Arr.sortWith([...openByRequestId.values()], (s) => new Date(s.createdAt), Order.Date);
+}
+
+function parsePlanExecutionModel(value: unknown): ProviderPlanExecutionModel | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.provider !== "string" || typeof record.modelId !== "string") return null;
+  return {
+    provider: record.provider,
+    modelId: record.modelId,
+    ...(typeof record.thinkingLevel === "string" ? { thinkingLevel: record.thinkingLevel } : {}),
+  };
+}
+
+export function derivePendingPlanReview(
+  sortedActivities: ReadonlyArray<OrchestrationThreadActivity>,
+): PendingPlanReview | null {
+  let pending: PendingPlanReview | null = null;
+  for (const activity of sortedActivities) {
+    const payload =
+      activity.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : null;
+    const requestId = parseApprovalRequestId(payload?.requestId);
+    if (!payload || !requestId) continue;
+    if (activity.kind === "plan.review.resolved") {
+      if (pending?.requestId === requestId) pending = null;
+      continue;
+    }
+    if (
+      activity.kind !== "plan.review.requested" ||
+      typeof payload.title !== "string" ||
+      typeof payload.planArtifactId !== "string" ||
+      typeof payload.planArtifactUrl !== "string" ||
+      typeof payload.planMarkdown !== "string" ||
+      !Array.isArray(payload.allowedContextStrategies) ||
+      !Array.isArray(payload.executionModels)
+    ) {
+      continue;
+    }
+    const allowedContextStrategies = payload.allowedContextStrategies.filter(
+      (value): value is ProviderPlanReviewContextStrategy =>
+        value === "fresh" || value === "preserve" || value === "compact",
+    );
+    const executionModels = payload.executionModels
+      .map(parsePlanExecutionModel)
+      .filter((model): model is ProviderPlanExecutionModel => model !== null);
+    const defaultExecutionModel = parsePlanExecutionModel(payload.defaultExecutionModel);
+    pending = {
+      requestId,
+      createdAt: activity.createdAt,
+      title: payload.title,
+      planArtifactId: payload.planArtifactId,
+      planArtifactUrl: payload.planArtifactUrl,
+      planMarkdown: payload.planMarkdown,
+      allowedContextStrategies,
+      executionModels,
+      ...(defaultExecutionModel ? { defaultExecutionModel } : {}),
+      ...(payload.contextUsage !== undefined ? { contextUsage: payload.contextUsage } : {}),
+    };
+  }
+  return pending;
 }
 
 export function setPendingUserInputCustomAnswer(
@@ -1477,10 +1602,19 @@ export function setPendingUserInputCustomAnswer(
     customAnswer.trim().length > 0
       ? undefined
       : normalizeSelectedOptionLabels(draft?.selectedOptionLabels);
+  const note = draft?.note;
   return {
     customAnswer,
     ...(selectedOptionLabels && selectedOptionLabels.length > 0 ? { selectedOptionLabels } : {}),
+    ...(note !== undefined ? { note } : {}),
   };
+}
+
+export function setPendingUserInputNote(
+  draft: PendingUserInputDraftAnswer | undefined,
+  note: string,
+): PendingUserInputDraftAnswer {
+  return { ...draft, note };
 }
 
 export function isPendingUserInputOptionSelected(
@@ -1500,6 +1634,7 @@ export function togglePendingUserInputOptionSelection(
   optionLabel: string,
 ): PendingUserInputDraftAnswer {
   const normalizedOptionLabel = optionLabel.trim();
+  const note = draft?.note;
 
   if (question.multiSelect) {
     const selectedOptionLabels = normalizeSelectedOptionLabels(draft?.selectedOptionLabels);
@@ -1512,27 +1647,37 @@ export function togglePendingUserInputOptionSelection(
       ...(nextSelectedOptionLabels.length > 0
         ? { selectedOptionLabels: nextSelectedOptionLabels }
         : {}),
+      ...(note !== undefined ? { note } : {}),
     };
   }
 
   return {
     customAnswer: "",
     selectedOptionLabels: [normalizedOptionLabel],
+    ...(note !== undefined ? { note } : {}),
   };
 }
 
 export function buildPendingUserInputAnswers(
   questions: ReadonlyArray<UserInputQuestion>,
   draftAnswers: Record<string, PendingUserInputDraftAnswer>,
-): Record<string, string | ReadonlyArray<string>> | null {
-  const answers: Record<string, string | ReadonlyArray<string>> = {};
+  supportsNote: boolean = true,
+): Record<string, ProviderUserInputAnswer> | null {
+  const answers: Record<string, ProviderUserInputAnswer> = {};
 
   for (const question of questions) {
-    const answer = resolvePendingUserInputAnswer(question, draftAnswers[question.id]);
-    if (!answer) {
-      return null;
-    }
-    answers[question.id] = answer;
+    const draft = draftAnswers[question.id];
+    // Custom free-text is only accepted when the question allows it (default true).
+    const customInput =
+      question.allowCustom !== false ? normalizeDraftAnswer(draft?.customAnswer) : null;
+    const selectedOptions = customInput ? [] : [...selectedOptionLabels(draft)];
+    if (selectedOptions.length === 0 && !customInput) return null;
+    const note = supportsNote ? normalizeDraftAnswer(draft?.note) : null;
+    answers[question.id] = {
+      selectedOptions,
+      ...(customInput ? { customInput } : {}),
+      ...(note ? { note } : {}),
+    };
   }
 
   return answers;
@@ -1551,6 +1696,28 @@ export function buildThreadFeed(
     : loadedMessages;
   const oldestLoadedMessageCreatedAt =
     options?.loadedMessages !== undefined ? (loadedMessages[0]?.createdAt ?? null) : null;
+  const checkpointTurnCountByAssistantMessageId = new Map(
+    thread.checkpoints
+      .filter(
+        (checkpoint) => checkpoint.status === "ready" && checkpoint.assistantMessageId !== null,
+      )
+      .map(
+        (checkpoint) => [checkpoint.assistantMessageId!, checkpoint.checkpointTurnCount] as const,
+      ),
+  );
+  const checkpointTurnCountByUserMessageId = new Map<string, number>();
+  for (let index = 0; index < loadedMessages.length; index += 1) {
+    const message = loadedMessages[index];
+    if (!message || message.role !== "user") continue;
+    for (let nextIndex = index + 1; nextIndex < loadedMessages.length; nextIndex += 1) {
+      const nextMessage = loadedMessages[nextIndex];
+      if (!nextMessage || nextMessage.role === "user") break;
+      const checkpointTurnCount = checkpointTurnCountByAssistantMessageId.get(nextMessage.id);
+      if (checkpointTurnCount === undefined) continue;
+      checkpointTurnCountByUserMessageId.set(message.id, Math.max(0, checkpointTurnCount - 1));
+      break;
+    }
+  }
   const workLogEntries = deriveWorkLogEntries(thread.activities);
   const entries = Arr.sortWith(
     [
@@ -1559,6 +1726,9 @@ export function buildThreadFeed(
         id: message.id,
         createdAt: message.createdAt,
         message,
+        ...(message.role === "user" && checkpointTurnCountByUserMessageId.has(message.id)
+          ? { checkpointTurnCount: checkpointTurnCountByUserMessageId.get(message.id)! }
+          : {}),
       })),
       ...workLogEntries
         .filter((entry) => {

@@ -4,6 +4,7 @@ import type {
   ModelSelection,
   OrchestrationThreadShell,
   ProviderInteractionMode,
+  ProviderPlanWorkflow,
   RuntimeMode,
   ServerConfig as T3ServerConfig,
 } from "@t3tools/contracts";
@@ -105,6 +106,7 @@ export interface ThreadComposerProps {
    */
   readonly threadSyncPhase?: "loading" | "syncing" | null;
   readonly selectedThread: OrchestrationThreadShell;
+  readonly workflow: ProviderPlanWorkflow | null;
   readonly serverConfig: T3ServerConfig | null;
   readonly queueCount: number;
   readonly environmentId: EnvironmentId;
@@ -118,7 +120,10 @@ export interface ThreadComposerProps {
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onUpdateModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateRuntimeMode: (runtimeMode: RuntimeMode) => void;
-  readonly onUpdateInteractionMode: (interactionMode: ProviderInteractionMode) => void;
+  readonly onUpdateInteractionMode: (
+    interactionMode: ProviderInteractionMode,
+    workflow?: ProviderPlanWorkflow,
+  ) => void;
   readonly onReconnectEnvironment: () => void;
   readonly onExpandedChange?: (expanded: boolean) => void;
   /** Fires on editor focus/blur; hosts use it to vet stale keyboard state. */
@@ -336,6 +341,8 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     props.connectionState !== "connected" || props.queueCount > 0 ? "Queue" : "Send";
   const currentModelSelection = props.selectedThread.modelSelection;
   const currentRuntimeMode = props.selectedThread.runtimeMode;
+  const currentInteractionMode = props.selectedThread.interactionMode ?? "default";
+  const currentPlanWorkflow = props.workflow;
   const connectionStatus = composerConnectionStatus({
     connectionError: props.connectionError,
     connectionState: props.connectionState,
@@ -355,6 +362,23 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       ) ?? null
     );
   }, [props.serverConfig, props.selectedThread.modelSelection.instanceId]);
+  useEffect(() => {
+    if (
+      selectedProviderStatus?.supportedRuntimeModes &&
+      selectedProviderStatus.supportedRuntimeModes.length > 0 &&
+      currentRuntimeMode &&
+      !selectedProviderStatus.supportedRuntimeModes.includes(currentRuntimeMode)
+    ) {
+      const fallback = selectedProviderStatus.supportedRuntimeModes[0];
+      if (fallback) {
+        props.onUpdateRuntimeMode(fallback);
+      }
+    }
+  }, [
+    selectedProviderStatus?.supportedRuntimeModes,
+    currentRuntimeMode,
+    props.onUpdateRuntimeMode,
+  ]);
 
   // ── Trigger detection ────────────────────────────────────
   const [composerSelection, setComposerSelection] = useState(() => ({
@@ -654,15 +678,29 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       optionDescriptors: providerOptionDescriptors,
       onUpdateOptionSelections: (options) =>
         props.onUpdateModelSelection({ ...currentModelSelection, options }),
+      interactionMode: currentInteractionMode,
+      workflow: currentPlanWorkflow,
+      supportedInteractionModes: selectedProviderStatus?.supportedInteractionModes,
+      supportedPlanWorkflows: selectedProviderStatus?.supportedPlanWorkflows,
+      defaultPlanWorkflow: selectedProviderStatus?.defaultPlanWorkflow,
+      onUpdateInteractionMode: props.onUpdateInteractionMode,
       runtimeMode: currentRuntimeMode,
+      supportedRuntimeModes: selectedProviderStatus?.supportedRuntimeModes,
       onUpdateRuntimeMode: props.onUpdateRuntimeMode,
     }),
     [
+      currentInteractionMode,
       currentModelSelection,
+      currentPlanWorkflow,
       currentRuntimeMode,
+      props.onUpdateInteractionMode,
       props.onUpdateModelSelection,
       props.onUpdateRuntimeMode,
       providerOptionDescriptors,
+      selectedProviderStatus?.defaultPlanWorkflow,
+      selectedProviderStatus?.supportedInteractionModes,
+      selectedProviderStatus?.supportedPlanWorkflows,
+      selectedProviderStatus?.supportedRuntimeModes,
       settingsOwnerId,
       threadProviderGroups,
     ],

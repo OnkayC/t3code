@@ -3,6 +3,11 @@ import type { EnvironmentThreadStatus } from "@t3tools/client-runtime/state/thre
 import { useKeyboardChatComposerInset, useKeyboardScrollToEnd } from "@legendapp/list/keyboard";
 import type { LegendListRef } from "@legendapp/list/react-native";
 import { HeaderHeightContext } from "@react-navigation/elements";
+import {
+  samePlanReviewResponseScope,
+  type PlanReviewResponseScope,
+  type ProviderQueuedTurn,
+} from "@t3tools/client-runtime/state/providerInteractionRuntime";
 import type {
   ApprovalRequestId,
   EnvironmentId,
@@ -10,6 +15,10 @@ import type {
   ModelSelection,
   OrchestrationThreadShell,
   ProviderApprovalDecision,
+  ProviderPlanReviewDecision,
+  ProviderPlanWorkflow,
+  ProviderUserInputAnswer,
+  ProviderUserInputResponse,
   ProviderInteractionMode,
   RuntimeMode,
   ServerConfig as T3ServerConfig,
@@ -32,6 +41,7 @@ import {
   AppState,
   Keyboard,
   Platform,
+  Pressable,
   useWindowDimensions,
   View,
   type GestureResponderEvent,
@@ -51,6 +61,7 @@ import Animated, {
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { AppText as Text } from "../../components/AppText";
 import { ControlPill } from "../../components/ControlPill";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import type { ComposerEditorHandle } from "../../components/ComposerEditor";
@@ -61,10 +72,12 @@ import { IOS_NAV_BAR_HEIGHT } from "../../lib/layoutMetrics";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import type {
   PendingApproval,
+  PendingPlanReview,
   PendingUserInput,
   PendingUserInputDraftAnswer,
   ThreadFeedEntry,
 } from "../../lib/threadActivity";
+import { ProposedPlanCard } from "./ProposedPlanCard";
 import { PendingApprovalCard } from "./PendingApprovalCard";
 import { PendingUserInputCard } from "./PendingUserInputCard";
 import {
@@ -83,6 +96,7 @@ import { resolveThreadFeedSubmissionAnchor } from "./thread-feed-live-follow";
 
 export interface ThreadDetailScreenProps {
   readonly selectedThread: OrchestrationThreadShell;
+  readonly workflow: ProviderPlanWorkflow | null;
   readonly contentPresentation: ThreadContentPresentation;
   readonly screenTone: StatusTone;
   readonly connectionError: string | null;
@@ -93,8 +107,13 @@ export interface ThreadDetailScreenProps {
   readonly respondingApprovalId: ApprovalRequestId | null;
   readonly activePendingUserInput: PendingUserInput | null;
   readonly activePendingUserInputDrafts: Record<string, PendingUserInputDraftAnswer>;
-  readonly activePendingUserInputAnswers: Record<string, string | ReadonlyArray<string>> | null;
+  readonly activePendingUserInputAnswers: Record<string, ProviderUserInputAnswer> | null;
+  readonly activePendingPlanReview: PendingPlanReview | null;
+  readonly respondingPlanReviewScope: PlanReviewResponseScope | null;
   readonly respondingUserInputId: ApprovalRequestId | null;
+  readonly queuedTurns?: ReadonlyArray<ProviderQueuedTurn>;
+  readonly cancellingQueuedTurnIds?: ReadonlyArray<string>;
+  readonly onCancelQueuedTurn?: (turnId: string) => Promise<unknown>;
   readonly draftMessage: string;
   readonly draftAttachments: ReadonlyArray<DraftComposerImageAttachment>;
   readonly connectionStateLabel: EnvironmentConnectionPhase;
@@ -119,8 +138,11 @@ export interface ThreadDetailScreenProps {
   readonly onSendMessage: () => Promise<MessageId | null>;
   readonly onReconnectEnvironment: () => void;
   readonly onUpdateThreadModelSelection: (modelSelection: ModelSelection) => void;
+  readonly onUpdateThreadInteractionMode: (
+    interactionMode: ProviderInteractionMode,
+    workflow?: ProviderPlanWorkflow,
+  ) => void;
   readonly onUpdateThreadRuntimeMode: (runtimeMode: RuntimeMode) => void;
-  readonly onUpdateThreadInteractionMode: (interactionMode: ProviderInteractionMode) => void;
   readonly onRespondToApproval: (
     requestId: ApprovalRequestId,
     decision: ProviderApprovalDecision,
@@ -135,7 +157,15 @@ export interface ThreadDetailScreenProps {
     questionId: string,
     customAnswer: string,
   ) => void;
-  readonly onSubmitUserInput: () => Promise<unknown>;
+  readonly onChangeUserInputNote: (
+    requestId: ApprovalRequestId,
+    questionId: string,
+    note: string,
+  ) => void;
+  readonly onRespondToUserInput: (response: ProviderUserInputResponse) => Promise<unknown>;
+  readonly onRespondToPlanReview: (decision: ProviderPlanReviewDecision) => Promise<unknown>;
+  readonly onRevertCheckpoint: (turnCount: number) => void;
+  readonly checkpointRevertDisabled?: boolean;
   readonly showContent?: boolean;
 }
 
@@ -630,6 +660,8 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             onEndFollowEnabledChange={setEndFollowEnabled}
             skills={selectedProviderSkills}
             loadEarlier={props.loadEarlier ?? null}
+            onRevertCheckpoint={props.onRevertCheckpoint}
+            checkpointRevertDisabled={props.checkpointRevertDisabled}
           />
         </View>
       ) : (
@@ -694,7 +726,10 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               </Animated.View>
             ) : null}
             <View className="w-full self-center" style={{ maxWidth: contentMaxWidth }}>
-              {props.activePendingApproval || props.activePendingUserInput ? (
+              {props.activePendingApproval ||
+              props.activePendingUserInput ||
+              props.activePendingPlanReview ||
+              (props.queuedTurns?.length ?? 0) > 0 ? (
                 <Animated.View
                   className="shrink-0 gap-3 px-4 pb-3"
                   // The questionnaire replaces the composer, so it must pad
@@ -707,6 +742,17 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                   entering={FadeInDown.duration(220)}
                   exiting={FadeOut.duration(140)}
                 >
+                  {props.activePendingPlanReview ? (
+                    <ProposedPlanCard
+                      review={props.activePendingPlanReview}
+                      responding={samePlanReviewResponseScope(props.respondingPlanReviewScope, {
+                        environmentId: props.environmentId,
+                        threadId: props.selectedThread.id,
+                        requestId: props.activePendingPlanReview.requestId,
+                      })}
+                      onRespond={props.onRespondToPlanReview}
+                    />
+                  ) : null}
                   {props.activePendingApproval ? (
                     <PendingApprovalCard
                       approval={props.activePendingApproval}
@@ -729,9 +775,45 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                       respondingUserInputId={props.respondingUserInputId}
                       onSelectOption={props.onSelectUserInputOption}
                       onChangeCustomAnswer={props.onChangeUserInputCustomAnswer}
-                      onSubmit={props.onSubmitUserInput}
+                      onChangeNote={props.onChangeUserInputNote}
+                      onRespond={props.onRespondToUserInput}
                     />
                   ) : null}
+                  {props.queuedTurns?.map((queued) => {
+                    const cancelling = props.cancellingQueuedTurnIds?.includes(queued.turnId);
+                    const label =
+                      queued.deliveryMode === "follow-up"
+                        ? `Follow-up queued (#${queued.queuePosition})`
+                        : `Steer queued (#${queued.queuePosition})`;
+                    return (
+                      <View
+                        key={queued.turnId}
+                        className="gap-2.5 rounded-[20px] border border-neutral-200 bg-neutral-100 p-4 dark:border-white/6 dark:bg-neutral-900"
+                      >
+                        <Text className="font-t3-bold text-2xs uppercase tracking-[1.1px] text-sky-700 dark:text-sky-300">
+                          Queued turn
+                        </Text>
+                        <Text className="font-t3-bold text-base text-neutral-950 dark:text-neutral-50">
+                          {label}
+                        </Text>
+                        <Text className="text-sm text-neutral-600 dark:text-neutral-300">
+                          Waiting for the current turn to finish before promotion.
+                        </Text>
+                        {props.onCancelQueuedTurn ? (
+                          <Pressable
+                            accessibilityRole="button"
+                            disabled={cancelling}
+                            onPress={() => void props.onCancelQueuedTurn?.(queued.turnId)}
+                            className="self-start rounded-xl bg-neutral-200 px-3 py-2 dark:bg-neutral-800"
+                          >
+                            <Text className="font-t3-bold text-sm text-neutral-900 dark:text-neutral-100">
+                              {cancelling ? "Cancelling..." : "Cancel"}
+                            </Text>
+                          </Pressable>
+                        ) : null}
+                      </View>
+                    );
+                  })}
                 </Animated.View>
               ) : null}
             </View>
@@ -750,6 +832,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 environmentLabel={props.environmentLabel}
                 threadSyncPhase={threadSyncPhase}
                 selectedThread={props.selectedThread}
+                workflow={props.workflow}
                 serverConfig={props.serverConfig}
                 queueCount={props.selectedThreadQueueCount}
                 environmentId={props.environmentId}
