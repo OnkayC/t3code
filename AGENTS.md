@@ -118,6 +118,7 @@ An empty database is a bad test. Seed your worktree's `.t3` with a copy of real 
 - UI changes need before/after images. Motion or timing needs a short video.
 - One concern per PR. If the description says "also", split it.
 - When babysitting: poll checks and comments newer than the last push, verify each bot finding against the source, fix real ones, dismiss false positives with a written reason. Stay quiet when nothing is new. Stop when the bots are green on the latest commit.
+- Codex review auto-starts on each new commit push. Never post `@codex review` (or similar manual review triggers); push the commit and wait for the automatic review.
 
 ## How it works
 
