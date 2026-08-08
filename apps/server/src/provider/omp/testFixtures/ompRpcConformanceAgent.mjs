@@ -228,6 +228,9 @@ function handle(command) {
     case "echo":
       respond(command, { value: command.value, sequence: command.sequence });
       return;
+    case "acknowledge_payload":
+      respond(command, { byteLength: command.value.length });
+      return;
     case "pause_stdin":
       respond(command, {});
       process.stdin.pause();

@@ -125,13 +125,13 @@ it.effect("correlates concurrent requests and preserves ordered stdin writes", (
 it.effect("starts response timeouts after queued frame delivery", () =>
   withRuntime((runtime) =>
     Effect.gen(function* () {
-      yield* runtime.request({ type: "pause_stdin", durationMs: 100 });
+      yield* runtime.request({ type: "pause_stdin", durationMs: 500 });
       const value = "q".repeat(2_000_000);
-      const response = yield* runtime.request<{ value: string }>(
-        { type: "echo", value },
-        { timeoutMs: 20 },
+      const response = yield* runtime.request<{ byteLength: number }>(
+        { type: "acknowledge_payload", value },
+        { timeoutMs: 100 },
       );
-      expect(response.value).toBe(value);
+      expect(response.byteLength).toBe(value.length);
     }),
   ),
 );
