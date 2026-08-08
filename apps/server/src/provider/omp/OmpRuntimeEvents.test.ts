@@ -485,6 +485,32 @@ describe("OmpRuntimeEvents", () => {
     });
   });
 
+  it("bounds large approval arguments before activity persistence", () => {
+    const normalizer = makeNormalizer();
+    const hugeCommand = `cat <<'EOF'\n${"a".repeat(80_000)}\nEOF`;
+    const [event] = normalizer.map({
+      type: "approval_request",
+      id: "approval-huge-args",
+      toolName: "bash",
+      tier: "exec",
+      arguments: { command: hugeCommand },
+      allowedDecisions: ["approve_once", "deny"],
+    });
+    if (!event) throw new Error("expected approval request");
+    const [activity] = runtimeEventToActivities(event);
+    const serialized = JSON.stringify(activity?.payload);
+    expect(serialized.length).toBeLessThan(40_000);
+    expect(activity?.payload).toMatchObject({
+      args: {
+        truncated: true,
+        originalLength: expect.any(Number),
+        summary: expect.stringContaining("truncated"),
+        tail: expect.any(String),
+      },
+    });
+    expect(serialized).not.toContain(hugeCommand);
+  });
+
   it("removes explicit agent starts from expected turns without disturbing queued order", () => {
     const normalizer = makeNormalizer();
     const secondTurnId = TurnId.make("turn-expected-second");
@@ -654,6 +680,68 @@ describe("OmpRuntimeEvents", () => {
     });
   });
 
+  it("coalesces repeated OMP tool updates by stable item identity", () => {
+    const normalizer = makeNormalizer();
+    const [firstEvent] = normalizer.map({
+      type: "tool_execution_update",
+      toolCallId: "tool-streaming-command",
+      toolName: "bash",
+      args: { command: "bun run test" },
+      partialResult: { content: "first chunk" },
+    });
+    const [secondEvent] = normalizer.map({
+      type: "tool_execution_update",
+      toolCallId: "tool-streaming-command",
+      toolName: "bash",
+      args: { command: "bun run test" },
+      partialResult: { content: "latest chunk" },
+    });
+    if (!firstEvent || !secondEvent) throw new Error("expected tool updates");
+
+    const [firstActivity] = runtimeEventToActivities(firstEvent);
+    const [secondActivity] = runtimeEventToActivities(secondEvent);
+
+    expect(firstActivity?.id).toBe(secondActivity?.id);
+    expect(secondActivity).toMatchObject({
+      kind: "tool.updated",
+      payload: {
+        itemId: "omp-tool-streaming-command",
+        data: { item: { result: { content: "latest chunk" } } },
+      },
+    });
+  });
+
+  it("preserves failed terminal tool status and error presentation in canonical activities", () => {
+    const normalizer = makeNormalizer();
+    normalizer.map({
+      type: "tool_execution_start",
+      toolCallId: "tool-failed-command",
+      toolName: "bash",
+      args: { command: "bun run test" },
+    });
+    const [event] = normalizer.map({
+      type: "tool_execution_end",
+      toolCallId: "tool-failed-command",
+      toolName: "bash",
+      result: { content: "tests failed" },
+      isError: true,
+    });
+    if (!event) throw new Error("expected failed tool completion");
+
+    const [activity] = runtimeEventToActivities(event);
+
+    expect(activity).toMatchObject({
+      tone: "error",
+      kind: "tool.completed",
+      summary: "bash failed",
+      payload: {
+        itemId: "omp-tool-failed-command",
+        itemType: "command_execution",
+        status: "failed",
+      },
+    });
+  });
+
   it("bounds large tool partialResult/result before activity persistence", () => {
     const normalizer = makeNormalizer();
     const huge = "x".repeat(80_000);
@@ -707,6 +795,73 @@ describe("OmpRuntimeEvents", () => {
       },
     });
     expect(serialized).not.toContain(huge);
+  });
+
+  it("bounds large tool arguments before activity persistence", () => {
+    const normalizer = makeNormalizer();
+    const hugePatch = "p".repeat(80_000);
+    const [event] = normalizer.map({
+      type: "tool_execution_start",
+      toolCallId: "tool-huge-args",
+      toolName: "edit",
+      args: {
+        path: "apps/server/src/big.ts",
+        newText: hugePatch,
+      },
+    });
+    if (!event) throw new Error("expected tool start");
+    const [activity] = runtimeEventToActivities(event);
+    const serialized = JSON.stringify(activity?.payload);
+    expect(serialized.length).toBeLessThan(40_000);
+    expect(activity?.payload).toMatchObject({
+      data: {
+        item: {
+          input: {
+            truncated: true,
+            originalLength: expect.any(Number),
+            summary: expect.stringContaining("truncated"),
+            tail: expect.any(String),
+          },
+        },
+      },
+    });
+    expect(serialized).not.toContain(hugePatch);
+  });
+
+  it("bounds large command_execution command summaries duplicated onto data.command", () => {
+    const normalizer = makeNormalizer();
+    const hugeCommand = `cat <<'EOF'\n${"c".repeat(80_000)}\nEOF`;
+    const [event] = normalizer.map({
+      type: "tool_execution_start",
+      toolCallId: "tool-huge-command",
+      toolName: "bash",
+      args: { command: hugeCommand },
+    });
+    if (!event) throw new Error("expected tool start");
+    const [activity] = runtimeEventToActivities(event);
+    const serialized = JSON.stringify(activity?.payload);
+    expect(serialized.length).toBeLessThan(40_000);
+    expect(activity?.payload).toMatchObject({
+      data: {
+        command: {
+          truncated: true,
+          originalLength: hugeCommand.length,
+          summary: expect.stringContaining("truncated"),
+          tail: expect.any(String),
+        },
+        item: {
+          command: {
+            truncated: true,
+            originalLength: hugeCommand.length,
+          },
+          input: {
+            truncated: true,
+            originalLength: expect.any(Number),
+          },
+        },
+      },
+    });
+    expect(serialized).not.toContain(hugeCommand);
   });
 
   it("redacts secrets before serializing bounded result tails", () => {

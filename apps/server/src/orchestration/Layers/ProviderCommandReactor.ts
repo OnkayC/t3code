@@ -3,7 +3,6 @@ import {
   CommandId,
   EventId,
   type ModelSelection,
-  type ProviderInteractionMode,
   type OrchestrationEvent,
   ProviderDriverKind,
   type ProjectId,
@@ -12,6 +11,9 @@ import {
   type ProviderSession,
   type RuntimeMode,
   type TurnId,
+  type ProviderInteractionMode,
+  type ProviderPlanWorkflow,
+  type ProviderTurnDeliveryMode,
 } from "@t3tools/contracts";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
 import * as Cache from "effect/Cache";
@@ -57,10 +59,12 @@ type ProviderIntentEvent = Extract<
     type:
       | "thread.meta-updated"
       | "thread.runtime-mode-set"
+      | "thread.interaction-mode-change-requested"
       | "thread.turn-start-requested"
       | "thread.turn-interrupt-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
+      | "thread.plan-review-response-requested"
       | "thread.session-stop-requested";
   }
 >;
@@ -269,6 +273,16 @@ function isUnknownPendingUserInputRequestError(cause: Cause.Cause<ProviderServic
     message.includes("unknown pending codex user input request")
   );
 }
+function isUnknownPendingPlanReviewError(cause: Cause.Cause<ProviderServiceError>): boolean {
+  const detail =
+    findProviderAdapterRequestError(cause)?.detail.toLowerCase() ??
+    Cause.pretty(cause).toLowerCase();
+  return (
+    detail.includes("plan review is stale or unknown") ||
+    detail.includes("unknown pending plan review") ||
+    detail.includes("stale pending plan review")
+  );
+}
 
 function stalePendingRequestDetail(
   requestKind: "approval" | "user-input",
@@ -336,6 +350,7 @@ const make = Effect.gen(function* () {
       | "provider.turn.interrupt.failed"
       | "provider.approval.respond.failed"
       | "provider.user-input.respond.failed"
+      | "provider.plan-review.respond.failed"
       | "provider.session.stop.failed";
     readonly summary: string;
     readonly detail: string;
@@ -365,6 +380,79 @@ const make = Effect.gen(function* () {
             createdAt: input.createdAt,
           },
           createdAt: input.createdAt,
+        }),
+      ),
+    );
+  const appendStalePlanReviewResolution = (input: {
+    readonly threadId: ThreadId;
+    readonly requestId: string;
+    readonly createdAt: string;
+  }) =>
+    Effect.all({
+      commandId: serverCommandId("provider-stale-plan-review-resolution"),
+      eventId: serverEventId(),
+    }).pipe(
+      Effect.flatMap(({ commandId, eventId }) =>
+        orchestrationEngine.dispatch({
+          type: "thread.activity.append",
+          commandId,
+          threadId: input.threadId,
+          activity: {
+            id: eventId,
+            tone: "info",
+            kind: "plan.review.resolved",
+            summary: "Plan review is no longer pending",
+            payload: { requestId: input.requestId, outcome: "stale" },
+            turnId: null,
+            createdAt: input.createdAt,
+          },
+          createdAt: input.createdAt,
+        }),
+      ),
+    );
+  const appendInteractionModeFailureActivity = (input: {
+    readonly threadId: ThreadId;
+    readonly commandId: CommandId;
+    readonly causationEventId: EventId;
+    readonly requestedInteractionMode: ProviderInteractionMode;
+    readonly requestedWorkflow?: ProviderPlanWorkflow;
+    readonly previousInteractionMode: ProviderInteractionMode;
+    readonly previousWorkflow?: ProviderPlanWorkflow;
+    readonly detail: string;
+    readonly createdAt: string;
+  }) =>
+    Effect.all({
+      activityCommandId: serverCommandId("provider-interaction-mode-failure-activity"),
+      activityId: serverEventId(),
+    }).pipe(
+      Effect.flatMap(({ activityCommandId, activityId }) =>
+        orchestrationEngine.dispatch({
+          type: "thread.activity.append",
+          commandId: activityCommandId,
+          threadId: input.threadId,
+          activity: {
+            id: activityId,
+            tone: "error",
+            kind: "provider.interaction-mode.set.failed",
+            summary: "Provider interaction mode change failed",
+            payload: {
+              commandId: input.commandId,
+              requestedInteractionMode: input.requestedInteractionMode,
+              ...(input.requestedWorkflow !== undefined
+                ? { requestedWorkflow: input.requestedWorkflow }
+                : {}),
+              previousInteractionMode: input.previousInteractionMode,
+              ...(input.previousWorkflow !== undefined
+                ? { previousWorkflow: input.previousWorkflow }
+                : {}),
+              detail: input.detail,
+            },
+            turnId: null,
+            createdAt: input.createdAt,
+          },
+          createdAt: input.createdAt,
+          causationEventId: input.causationEventId,
+          correlationId: input.commandId,
         }),
       ),
     );
@@ -688,7 +776,7 @@ const make = Effect.gen(function* () {
                 : mapProviderSessionStatusToOrchestrationStatus(session.status),
             providerName: session.provider,
             providerInstanceId: session.providerInstanceId,
-            runtimeMode: desiredRuntimeMode,
+            runtimeMode: session.runtimeMode,
             // Provider turn ids are not orchestration turn ids.
             activeTurnId: null,
             lastError: session.lastError ?? null,
@@ -750,8 +838,36 @@ const make = Effect.gen(function* () {
         shouldRestartForModelSelectionChange,
         hasResumeCursor: resumeCursor !== undefined,
       });
-      const restartedSession = yield* startProviderSession(
-        resumeCursor !== undefined ? { resumeCursor } : undefined,
+      let stoppedCurrentSession = false;
+      const restartedSession = yield* Effect.gen(function* () {
+        yield* providerService.stopSession({ threadId });
+        stoppedCurrentSession = true;
+        return yield* startProviderSession(
+          resumeCursor !== undefined ? { resumeCursor } : undefined,
+        );
+      }).pipe(
+        Effect.catchCause((cause) =>
+          setThreadSession({
+            threadId,
+            session: {
+              threadId,
+              status: "error",
+              providerName: stoppedCurrentSession
+                ? preferredProvider
+                : (activeSession?.provider ?? preferredProvider),
+              providerInstanceId: stoppedCurrentSession
+                ? desiredInstanceId
+                : (activeSession?.providerInstanceId ?? currentInstanceId),
+              runtimeMode: stoppedCurrentSession
+                ? desiredRuntimeMode
+                : (activeSession?.runtimeMode ?? thread.session?.runtimeMode ?? desiredRuntimeMode),
+              activeTurnId: null,
+              lastError: formatFailureDetail(cause),
+              updatedAt: createdAt,
+            },
+            createdAt,
+          }).pipe(Effect.andThen(Effect.failCause(cause))),
+        ),
       );
       yield* Effect.logInfo("provider command reactor restarted provider session", {
         threadId,
@@ -776,6 +892,8 @@ const make = Effect.gen(function* () {
     readonly attachments?: ReadonlyArray<ChatAttachment>;
     readonly modelSelection?: ModelSelection;
     readonly interactionMode?: ProviderInteractionMode;
+    readonly workflow?: ProviderPlanWorkflow;
+    readonly deliveryMode?: ProviderTurnDeliveryMode;
     readonly createdAt: string;
   }) {
     const thread = yield* resolveThread(input.threadId);
@@ -827,6 +945,8 @@ const make = Effect.gen(function* () {
       ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
       ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
+      ...(input.workflow !== undefined ? { workflow: input.workflow } : {}),
+      ...(input.deliveryMode !== undefined ? { deliveryMode: input.deliveryMode } : {}),
     };
   });
 
@@ -1209,6 +1329,10 @@ const make = Effect.gen(function* () {
         ? { modelSelection: event.payload.modelSelection }
         : {}),
       interactionMode: event.payload.interactionMode,
+      ...(event.payload.workflow !== undefined ? { workflow: event.payload.workflow } : {}),
+      ...(event.payload.deliveryMode !== undefined
+        ? { deliveryMode: event.payload.deliveryMode }
+        : {}),
       createdAt: event.payload.createdAt,
     }).pipe(
       Effect.map(Option.some),
@@ -1313,9 +1437,17 @@ const make = Effect.gen(function* () {
       });
     };
 
-    // Orchestration turn ids are not provider turn ids, so interrupt by session.
+    // Orchestration turn ids are not provider turn ids for most drivers, so
+    // interrupt is session-scoped. OMP host turns reuse clientTurnId as the
+    // orchestration turn id, so a concrete turnId can cancel one queued follow-up.
+    // Exact driver-kind match only — never prefix-match instance display names.
+    const providerName = thread.session?.providerName;
+    const forwardTurnId = event.payload.turnId !== undefined && providerName === "omp";
     yield* providerService
-      .interruptTurn({ threadId: event.payload.threadId })
+      .interruptTurn({
+        threadId: event.payload.threadId,
+        ...(forwardTurnId ? { turnId: event.payload.turnId } : {}),
+      })
       .pipe(Effect.catchCause(recoverInterruptFailure));
   });
 
@@ -1407,6 +1539,123 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const processPlanReviewResponseRequested = Effect.fn("processPlanReviewResponseRequested")(
+    function* (
+      event: Extract<ProviderIntentEvent, { type: "thread.plan-review-response-requested" }>,
+    ) {
+      const thread = yield* resolveThread(event.payload.threadId);
+      if (!thread) return;
+      const hasSession = thread.session && thread.session.status !== "stopped";
+      // Response failures stay nonterminal so the plan-review card remains for
+      // retry (mirrors approval/user-input). Only plan.review.resolved clears it.
+      if (!hasSession) {
+        return yield* appendProviderFailureActivity({
+          threadId: event.payload.threadId,
+          kind: "provider.plan-review.respond.failed",
+          summary: "Provider plan review response failed",
+          detail: "No active provider session is bound to this thread.",
+          turnId: null,
+          createdAt: event.payload.createdAt,
+          requestId: event.payload.requestId,
+        });
+      }
+      yield* providerService
+        .respondToPlanReview({
+          threadId: event.payload.threadId,
+          requestId: event.payload.requestId,
+          decision: event.payload.decision,
+        })
+        .pipe(
+          Effect.catchCause((cause) =>
+            Effect.gen(function* () {
+              yield* appendProviderFailureActivity({
+                threadId: event.payload.threadId,
+                kind: "provider.plan-review.respond.failed",
+                summary: "Provider plan review response failed",
+                detail: Cause.pretty(cause),
+                turnId: null,
+                createdAt: event.payload.createdAt,
+                requestId: event.payload.requestId,
+              });
+              if (isUnknownPendingPlanReviewError(cause)) {
+                yield* appendStalePlanReviewResolution({
+                  threadId: event.payload.threadId,
+                  requestId: event.payload.requestId,
+                  createdAt: event.payload.createdAt,
+                });
+              }
+            }),
+          ),
+        );
+    },
+  );
+
+  const processInteractionModeChangeRequested = Effect.fn("processInteractionModeChangeRequested")(
+    function* (
+      event: Extract<ProviderIntentEvent, { type: "thread.interaction-mode-change-requested" }>,
+    ) {
+      const thread = yield* resolveThread(event.payload.threadId);
+      if (!thread) return;
+      const requestCommandId = event.correlationId ?? event.commandId;
+      if (requestCommandId === null) {
+        return yield* Effect.logWarning(
+          "provider interaction mode change request is missing command correlation",
+          {
+            eventId: event.eventId,
+            threadId: event.payload.threadId,
+          },
+        );
+      }
+
+      if (
+        thread.session &&
+        thread.session.status !== "stopped" &&
+        thread.session.providerName === "omp"
+      ) {
+        const providerApplied = yield* providerService
+          .setInteractionMode({
+            threadId: event.payload.threadId,
+            interactionMode: event.payload.interactionMode,
+            ...(event.payload.workflow !== undefined ? { workflow: event.payload.workflow } : {}),
+          })
+          .pipe(
+            Effect.as(true),
+            Effect.catchCause((cause) => {
+              if (Cause.hasInterruptsOnly(cause)) {
+                return Effect.interrupt;
+              }
+              return appendInteractionModeFailureActivity({
+                threadId: event.payload.threadId,
+                commandId: requestCommandId,
+                causationEventId: event.eventId,
+                requestedInteractionMode: event.payload.interactionMode,
+                ...(event.payload.workflow !== undefined
+                  ? { requestedWorkflow: event.payload.workflow }
+                  : {}),
+                previousInteractionMode: thread.interactionMode,
+                ...(thread.workflow !== undefined ? { previousWorkflow: thread.workflow } : {}),
+                detail: formatFailureDetail(cause),
+                createdAt: event.payload.requestedAt,
+              }).pipe(Effect.as(false));
+            }),
+          );
+        if (!providerApplied) return;
+      }
+
+      const commandId = yield* serverCommandId("provider-interaction-mode-apply");
+      yield* orchestrationEngine.dispatch({
+        type: "thread.interaction-mode.apply",
+        commandId,
+        threadId: event.payload.threadId,
+        interactionMode: event.payload.interactionMode,
+        ...(event.payload.workflow !== undefined ? { workflow: event.payload.workflow } : {}),
+        requestCommandId,
+        causationEventId: event.eventId,
+        createdAt: event.payload.requestedAt,
+      });
+    },
+  );
+
   const processSessionStopRequested = Effect.fn("processSessionStopRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.session-stop-requested" }>,
   ) {
@@ -1415,10 +1664,23 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    const now = event.payload.createdAt;
-    if (thread.session && thread.session.status !== "stopped") {
-      yield* providerService.stopSession({ threadId: thread.id });
-    }
+    const stopped =
+      !thread.session || thread.session.status === "stopped"
+        ? true
+        : yield* providerService.stopSession({ threadId: thread.id }).pipe(
+            Effect.as(true),
+            Effect.catchCause((cause) =>
+              appendProviderFailureActivity({
+                threadId: thread.id,
+                kind: "provider.session.stop.failed",
+                summary: "Failed to stop provider session",
+                detail: formatFailureDetail(cause),
+                turnId: thread.session?.activeTurnId ?? null,
+                createdAt: event.payload.createdAt,
+              }).pipe(Effect.as(false)),
+            ),
+          );
+    if (!stopped) return;
 
     yield* setThreadSession({
       threadId: thread.id,
@@ -1432,9 +1694,9 @@ const make = Effect.gen(function* () {
         runtimeMode: thread.session?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
         activeTurnId: null,
         lastError: thread.session?.lastError ?? null,
-        updatedAt: now,
+        updatedAt: event.payload.createdAt,
       },
-      createdAt: now,
+      createdAt: event.payload.createdAt,
     });
   });
 
@@ -1466,6 +1728,9 @@ const make = Effect.gen(function* () {
         );
         return;
       }
+      case "thread.interaction-mode-change-requested":
+        yield* processInteractionModeChangeRequested(event);
+        return;
       case "thread.turn-start-requested":
         yield* processTurnStartRequested(event);
         return;
@@ -1477,6 +1742,9 @@ const make = Effect.gen(function* () {
         return;
       case "thread.user-input-response-requested":
         yield* processUserInputResponseRequested(event);
+        return;
+      case "thread.plan-review-response-requested":
+        yield* processPlanReviewResponseRequested(event);
         return;
       case "thread.session-stop-requested":
         yield* processSessionStopRequested(event);
@@ -1515,17 +1783,29 @@ const make = Effect.gen(function* () {
       if (
         (event.type === "thread.meta-updated" && event.payload.regenerateTitle === true) ||
         event.type === "thread.runtime-mode-set" ||
+        event.type === "thread.interaction-mode-change-requested" ||
         event.type === "thread.turn-start-requested" ||
         event.type === "thread.turn-interrupt-requested" ||
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
+        event.type === "thread.plan-review-response-requested" ||
         event.type === "thread.session-stop-requested"
       ) {
         return yield* worker.enqueue(event);
       }
     });
 
-    yield* forkParked(Stream.runForEach(orchestrationEngine.streamDomainEvents, processEvent));
+    const pullEvents = yield* Stream.toPull(orchestrationEngine.streamDomainEvents);
+    yield* forkParked(
+      Effect.forever(
+        pullEvents.pipe(
+          Effect.flatMap((events) => Effect.forEach(events, processEvent, { discard: true })),
+        ),
+      ),
+    );
+    // `streamDomainEvents` is hot. Give the forked pull loop one scheduling
+    // turn to acquire its PubSub subscription before `start` returns.
+    yield* Effect.yieldNow;
 
     // The domain event stream is hot, so work pending before this reactor
     // starts cannot be resumed. Correlated completions only clear the request

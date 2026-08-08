@@ -1319,8 +1319,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (turnId === null || event.payload.session.status !== "running") {
             if (
               event.payload.session.status === "error" ||
-              event.payload.session.status === "stopped" ||
-              event.payload.session.status === "interrupted"
+              event.payload.session.status === "interrupted" ||
+              event.payload.session.status === "stopped"
             ) {
               yield* projectionTurnRepository.deletePendingTurnsByThreadId({
                 threadId: event.payload.threadId,
@@ -1515,43 +1515,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
-        case "thread.turn-interrupt-requested": {
-          if (event.payload.turnId === undefined) {
-            return;
-          }
-          const existingTurn = yield* projectionTurnRepository.getByTurnId({
-            threadId: event.payload.threadId,
-            turnId: event.payload.turnId,
-          });
-          if (Option.isSome(existingTurn)) {
-            yield* projectionTurnRepository.upsertByTurnId({
-              ...existingTurn.value,
-              state: "interrupted",
-              completedAt: existingTurn.value.completedAt ?? event.payload.createdAt,
-              startedAt: existingTurn.value.startedAt ?? event.payload.createdAt,
-              requestedAt: existingTurn.value.requestedAt ?? event.payload.createdAt,
-            });
-            return;
-          }
-          yield* projectionTurnRepository.upsertByTurnId({
-            turnId: event.payload.turnId,
-            threadId: event.payload.threadId,
-            pendingMessageId: null,
-            sourceProposedPlanThreadId: null,
-            sourceProposedPlanId: null,
-            workflow: null,
-            assistantMessageId: null,
-            state: "interrupted",
-            requestedAt: event.payload.createdAt,
-            startedAt: event.payload.createdAt,
-            completedAt: event.payload.createdAt,
-            checkpointTurnCount: null,
-            checkpointRef: null,
-            checkpointStatus: null,
-            checkpointFiles: [],
-          });
+        case "thread.turn-interrupt-requested":
+          // The request is intent only. A concrete turn is settled by the
+          // provider's authoritative turn.aborted lifecycle event.
           return;
-        }
 
         case "thread.turn-diff-completed": {
           // Mid-turn diff updates produce placeholder checkpoints; record the
