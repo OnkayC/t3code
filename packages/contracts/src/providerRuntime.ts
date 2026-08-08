@@ -14,6 +14,16 @@ import {
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
+import {
+  ModelSelection,
+  ProviderApprovalDecision,
+  ProviderInteractionMode,
+  ProviderPlanExecutionModel,
+  ProviderPlanReviewContextStrategy,
+  ProviderPlanReviewDecision,
+  ProviderPlanWorkflow,
+  ProviderTurnDeliveryMode,
+} from "./orchestration.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
@@ -27,6 +37,7 @@ const RuntimeEventRawSource = Schema.Union([
   Schema.Literal("codex.sdk.thread-event"),
   Schema.Literal("opencode.sdk.event"),
   Schema.Literal("acp.jsonrpc"),
+  Schema.Literal("omp.rpc"),
   Schema.TemplateLiteral(["acp.", Schema.String, ".extension"]),
 ]);
 export type RuntimeEventRawSource = typeof RuntimeEventRawSource.Type;
@@ -138,6 +149,7 @@ export const CanonicalRequestType = Schema.Literals([
   "file_change_approval",
   "apply_patch_approval",
   "exec_command_approval",
+  "tool_approval",
   "tool_user_input",
   "dynamic_tool_call",
   "auth_tokens_refresh",
@@ -160,6 +172,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "thread.realtime.error",
   "thread.realtime.closed",
   "turn.started",
+  "turn.queued",
   "turn.completed",
   "turn.aborted",
   "turn.plan.updated",
@@ -174,6 +187,8 @@ const ProviderRuntimeEventType = Schema.Literals([
   "request.resolved",
   "user-input.requested",
   "user-input.resolved",
+  "plan.review.requested",
+  "plan.review.resolved",
   "task.started",
   "task.progress",
   "task.updated",
@@ -211,6 +226,7 @@ const ThreadRealtimeAudioDeltaType = Schema.Literal("thread.realtime.audio.delta
 const ThreadRealtimeErrorType = Schema.Literal("thread.realtime.error");
 const ThreadRealtimeClosedType = Schema.Literal("thread.realtime.closed");
 const TurnStartedType = Schema.Literal("turn.started");
+const TurnQueuedType = Schema.Literal("turn.queued");
 const TurnCompletedType = Schema.Literal("turn.completed");
 const TurnAbortedType = Schema.Literal("turn.aborted");
 const TurnPlanUpdatedType = Schema.Literal("turn.plan.updated");
@@ -225,6 +241,8 @@ const RequestOpenedType = Schema.Literal("request.opened");
 const RequestResolvedType = Schema.Literal("request.resolved");
 const UserInputRequestedType = Schema.Literal("user-input.requested");
 const UserInputResolvedType = Schema.Literal("user-input.resolved");
+const PlanReviewRequestedType = Schema.Literal("plan.review.requested");
+const PlanReviewResolvedType = Schema.Literal("plan.review.resolved");
 const TaskStartedType = Schema.Literal("task.started");
 const TaskProgressType = Schema.Literal("task.progress");
 const TaskUpdatedType = Schema.Literal("task.updated");
@@ -270,8 +288,25 @@ const SessionStartedPayload = Schema.Struct({
 });
 export type SessionStartedPayload = typeof SessionStartedPayload.Type;
 
+/**
+ * Provider-agnostic resume cursor. OMP uses schemaVersion+sessionKey+sessionId;
+ * OpenCode/others commonly use schemaVersion+sessionId. Extra keys are kept via
+ * the open struct so adapter-specific fields round-trip.
+ */
+export const ProviderResumeCursor = Schema.Struct({
+  schemaVersion: Schema.Literal(1),
+  sessionId: Schema.optional(TrimmedNonEmptyStringSchema),
+  sessionKey: Schema.optional(TrimmedNonEmptyStringSchema),
+});
+export type ProviderResumeCursor = typeof ProviderResumeCursor.Type;
+
 const SessionConfiguredPayload = Schema.Struct({
   config: UnknownRecordSchema,
+  resumeCursor: Schema.optional(ProviderResumeCursor),
+  interactionMode: Schema.optional(ProviderInteractionMode),
+  workflow: Schema.optional(ProviderPlanWorkflow),
+  /** Native model/thinking changes projected into the thread's model picker. */
+  modelSelection: Schema.optional(ModelSelection),
 });
 export type SessionConfiguredPayload = typeof SessionConfiguredPayload.Type;
 
@@ -360,6 +395,12 @@ const TurnStartedPayload = Schema.Struct({
   effort: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type TurnStartedPayload = typeof TurnStartedPayload.Type;
+const TurnQueuedPayload = Schema.Struct({
+  deliveryMode: ProviderTurnDeliveryMode,
+  optionFingerprint: TrimmedNonEmptyStringSchema,
+  queuePosition: PositiveInt,
+});
+export type TurnQueuedPayload = typeof TurnQueuedPayload.Type;
 
 const TurnCompletedPayload = Schema.Struct({
   state: RuntimeTurnState,
@@ -431,42 +472,112 @@ const RequestOpenedPayload = Schema.Struct({
   requestType: CanonicalRequestType,
   detail: Schema.optional(TrimmedNonEmptyStringSchema),
   args: Schema.optional(Schema.Unknown),
+  toolName: Schema.optional(TrimmedNonEmptyStringSchema),
+  approvalMode: Schema.optional(Schema.Literals(["always-ask", "write", "yolo"])),
+  tier: Schema.optional(Schema.Literals(["read", "write", "exec"])),
+  reason: Schema.optional(TrimmedNonEmptyStringSchema),
+  details: Schema.optional(Schema.Array(Schema.String)),
+  providerSafetyChecks: Schema.optional(Schema.Array(Schema.String)),
+  allowedDecisions: Schema.optional(Schema.Array(ProviderApprovalDecision)),
 });
 export type RequestOpenedPayload = typeof RequestOpenedPayload.Type;
 
+export const ProviderRequestTerminalOutcome = Schema.Literals([
+  "accepted",
+  "denied",
+  "cancelled",
+  "timed_out",
+  "stale",
+  "aborted",
+  "process_exited",
+]);
+export type ProviderRequestTerminalOutcome = typeof ProviderRequestTerminalOutcome.Type;
+
 const RequestResolvedPayload = Schema.Struct({
   requestType: CanonicalRequestType,
-  decision: Schema.optional(TrimmedNonEmptyStringSchema),
+  outcome: Schema.optional(ProviderRequestTerminalOutcome),
+  decision: Schema.optional(ProviderApprovalDecision),
   resolution: Schema.optional(Schema.Unknown),
 });
 export type RequestResolvedPayload = typeof RequestResolvedPayload.Type;
 
 const UserInputQuestionOption = Schema.Struct({
   label: TrimmedNonEmptyStringSchema,
-  description: TrimmedNonEmptyStringSchema,
+  description: Schema.optional(TrimmedNonEmptyStringSchema),
+  preview: Schema.optional(Schema.String),
 });
 export type UserInputQuestionOption = typeof UserInputQuestionOption.Type;
 
 export const UserInputQuestion = Schema.Struct({
   id: TrimmedNonEmptyStringSchema,
-  header: TrimmedNonEmptyStringSchema,
+  header: Schema.optional(TrimmedNonEmptyStringSchema),
   question: TrimmedNonEmptyStringSchema,
   options: Schema.Array(UserInputQuestionOption),
   multiSelect: Schema.optional(Schema.Boolean).pipe(
     Schema.withConstructorDefault(Effect.succeed(false)),
   ),
+  recommended: Schema.optional(NonNegativeInt),
+  allowCustom: Schema.optional(Schema.Boolean),
 });
 export type UserInputQuestion = typeof UserInputQuestion.Type;
 
+export const ProviderUserInputAction = Schema.Literals(["submit", "chat", "cancel"]);
+export type ProviderUserInputAction = typeof ProviderUserInputAction.Type;
+
 const UserInputRequestedPayload = Schema.Struct({
   questions: Schema.Array(UserInputQuestion),
+  allowedActions: Schema.optional(Schema.Array(ProviderUserInputAction)),
+  timeout: Schema.optional(NonNegativeInt),
 });
 export type UserInputRequestedPayload = typeof UserInputRequestedPayload.Type;
 
+export const ProviderUserInputTerminalOutcome = Schema.Literals([
+  "submitted",
+  "chat",
+  "cancelled",
+  "timed_out",
+  "stale",
+  "aborted",
+  "process_exited",
+]);
+export type ProviderUserInputTerminalOutcome = typeof ProviderUserInputTerminalOutcome.Type;
+
 const UserInputResolvedPayload = Schema.Struct({
-  answers: UnknownRecordSchema,
+  outcome: Schema.optional(ProviderUserInputTerminalOutcome),
+  answers: Schema.optional(UnknownRecordSchema),
 });
 export type UserInputResolvedPayload = typeof UserInputResolvedPayload.Type;
+
+const PlanReviewRequestedPayload = Schema.Struct({
+  title: TrimmedNonEmptyStringSchema,
+  planArtifactId: TrimmedNonEmptyStringSchema,
+  planArtifactUrl: TrimmedNonEmptyStringSchema,
+  planMarkdown: TrimmedNonEmptyStringSchema,
+  allowedContextStrategies: Schema.Array(ProviderPlanReviewContextStrategy),
+  contextUsage: Schema.optional(Schema.Unknown),
+  executionModels: Schema.Array(ProviderPlanExecutionModel),
+  defaultExecutionModel: Schema.optional(ProviderPlanExecutionModel),
+});
+export type PlanReviewRequestedPayload = typeof PlanReviewRequestedPayload.Type;
+
+export const ProviderPlanReviewTerminalOutcome = Schema.Literals([
+  "executing",
+  "refining",
+  "cancelled",
+  "stale",
+  "aborted",
+  "process_exited",
+]);
+export type ProviderPlanReviewTerminalOutcome = typeof ProviderPlanReviewTerminalOutcome.Type;
+
+const PlanReviewResolvedPayload = Schema.Struct({
+  outcome: ProviderPlanReviewTerminalOutcome,
+  decision: Schema.optional(ProviderPlanReviewDecision),
+  clientTurnId: Schema.optional(TurnId),
+  resume: Schema.optional(Schema.Unknown),
+  planDigest: Schema.optional(TrimmedNonEmptyStringSchema),
+});
+export type PlanReviewResolvedPayload = typeof PlanReviewResolvedPayload.Type;
 
 /**
  * Typed per-task usage rollup. Field names match the orchestration-v2 subagent
@@ -883,6 +994,12 @@ const ProviderRuntimeTurnStartedEvent = Schema.Struct({
   payload: TurnStartedPayload,
 });
 export type ProviderRuntimeTurnStartedEvent = typeof ProviderRuntimeTurnStartedEvent.Type;
+const ProviderRuntimeTurnQueuedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: TurnQueuedType,
+  payload: TurnQueuedPayload,
+});
+export type ProviderRuntimeTurnQueuedEvent = typeof ProviderRuntimeTurnQueuedEvent.Type;
 
 const ProviderRuntimeTurnCompletedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
@@ -985,6 +1102,21 @@ const ProviderRuntimeUserInputResolvedEvent = Schema.Struct({
 });
 export type ProviderRuntimeUserInputResolvedEvent =
   typeof ProviderRuntimeUserInputResolvedEvent.Type;
+const ProviderRuntimePlanReviewRequestedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: PlanReviewRequestedType,
+  payload: PlanReviewRequestedPayload,
+});
+export type ProviderRuntimePlanReviewRequestedEvent =
+  typeof ProviderRuntimePlanReviewRequestedEvent.Type;
+
+const ProviderRuntimePlanReviewResolvedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: PlanReviewResolvedType,
+  payload: PlanReviewResolvedPayload,
+});
+export type ProviderRuntimePlanReviewResolvedEvent =
+  typeof ProviderRuntimePlanReviewResolvedEvent.Type;
 
 const ProviderRuntimeTaskStartedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
@@ -1151,6 +1283,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeThreadRealtimeErrorEvent,
   ProviderRuntimeThreadRealtimeClosedEvent,
   ProviderRuntimeTurnStartedEvent,
+  ProviderRuntimeTurnQueuedEvent,
   ProviderRuntimeTurnCompletedEvent,
   ProviderRuntimeTurnAbortedEvent,
   ProviderRuntimeTurnPlanUpdatedEvent,
@@ -1165,6 +1298,8 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeRequestResolvedEvent,
   ProviderRuntimeUserInputRequestedEvent,
   ProviderRuntimeUserInputResolvedEvent,
+  ProviderRuntimePlanReviewRequestedEvent,
+  ProviderRuntimePlanReviewResolvedEvent,
   ProviderRuntimeTaskStartedEvent,
   ProviderRuntimeTaskProgressEvent,
   ProviderRuntimeTaskUpdatedEvent,

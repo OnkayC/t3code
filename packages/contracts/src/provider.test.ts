@@ -3,15 +3,27 @@ import * as Schema from "effect/Schema";
 
 import {
   ProviderEvent,
+  ProviderRespondToPlanReviewInput,
+  ProviderRespondToUserInputInput,
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
+  ProviderSetInteractionModeInput,
 } from "./provider.ts";
 
 const decodeProviderSessionStartInput = Schema.decodeUnknownSync(ProviderSessionStartInput);
 const decodeProviderSendTurnInput = Schema.decodeUnknownSync(ProviderSendTurnInput);
 const decodeProviderSession = Schema.decodeUnknownSync(ProviderSession);
 const decodeProviderEvent = Schema.decodeUnknownSync(ProviderEvent);
+const decodeProviderRespondToUserInputInput = Schema.decodeUnknownSync(
+  ProviderRespondToUserInputInput,
+);
+const decodeProviderRespondToPlanReviewInput = Schema.decodeUnknownSync(
+  ProviderRespondToPlanReviewInput,
+);
+const decodeProviderSetInteractionModeInput = Schema.decodeUnknownSync(
+  ProviderSetInteractionModeInput,
+);
 
 function getOptionValue(
   options: ReadonlyArray<{ id: string; value: unknown }> | undefined,
@@ -150,6 +162,89 @@ describe("ProviderSendTurnInput", () => {
     expect(parsed.modelSelection?.instanceId).toBe("claudeAgent");
     expect(getOptionValue(parsed.modelSelection?.options, "effort")).toBe("ultrathink");
     expect(getOptionValue(parsed.modelSelection?.options, "fastMode")).toBe(true);
+  });
+});
+
+describe("provider interaction inputs", () => {
+  it("normalizes legacy user-input answers at the provider boundary", () => {
+    const parsed = decodeProviderRespondToUserInputInput({
+      threadId: "thread-1",
+      requestId: "ask-1",
+      answers: {
+        framework: "React",
+        targets: ["Web", "Mobile"],
+      },
+    });
+
+    expect(parsed).toEqual({
+      threadId: "thread-1",
+      requestId: "ask-1",
+      response: {
+        kind: "submit",
+        answers: {
+          framework: { selectedOptions: ["React"] },
+          targets: { selectedOptions: ["Web", "Mobile"] },
+        },
+      },
+    });
+  });
+
+  it("accepts canonical submit, chat, and cancel user-input responses", () => {
+    const submit = decodeProviderRespondToUserInputInput({
+      threadId: "thread-1",
+      requestId: "ask-1",
+      response: {
+        kind: "submit",
+        answers: {
+          targets: {
+            selectedOptions: ["Web", "Mobile"],
+            customInput: "Also deploy docs",
+            note: "Staged rollout",
+          },
+        },
+      },
+    });
+    const chat = decodeProviderRespondToUserInputInput({
+      threadId: "thread-1",
+      requestId: "ask-2",
+      response: { kind: "chat" },
+    });
+    const cancel = decodeProviderRespondToUserInputInput({
+      threadId: "thread-1",
+      requestId: "ask-3",
+      response: { kind: "cancel" },
+    });
+
+    expect(submit.response.kind).toBe("submit");
+    expect(chat.response.kind).toBe("chat");
+    expect(cancel.response.kind).toBe("cancel");
+  });
+
+  it("decodes follow-up delivery and native plan controls", () => {
+    const turn = decodeProviderSendTurnInput({
+      threadId: "thread-1",
+      input: "continue",
+      deliveryMode: "follow-up",
+    });
+    const interaction = decodeProviderSetInteractionModeInput({
+      threadId: "thread-1",
+      interactionMode: "plan-paused",
+      workflow: "parallel",
+    });
+    const review = decodeProviderRespondToPlanReviewInput({
+      threadId: "thread-1",
+      requestId: "plan-review-1",
+      decision: {
+        action: "refine",
+        feedback: "Add rollback steps",
+        replacementPlanMarkdown: "# Revised plan",
+        clientTurnId: "turn-refine",
+      },
+    });
+
+    expect(turn.deliveryMode).toBe("follow-up");
+    expect(interaction).toMatchObject({ interactionMode: "plan-paused", workflow: "parallel" });
+    expect(review.decision.action).toBe("refine");
   });
 });
 

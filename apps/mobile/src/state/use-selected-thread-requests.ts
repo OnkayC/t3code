@@ -152,7 +152,15 @@ export function useSelectedThreadRequests() {
       input: {
         threadId: selectedThreadShell.id,
         requestId: activePendingUserInput.requestId,
-        answers: activePendingUserInputAnswers,
+        response: {
+          kind: "submit",
+          answers: Object.fromEntries(
+            Object.entries(activePendingUserInputAnswers).map(([questionId, answer]) => [
+              questionId,
+              { selectedOptions: [answer] },
+            ]),
+          ),
+        },
       },
     });
     setRespondingUserInputId((current) =>

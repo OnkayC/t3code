@@ -67,11 +67,7 @@ export function hasConfiguredMcpServer(appServerArgs: ReadonlyArray<string> | un
 export const CodexResumeCursorSchema = Schema.Struct({
   threadId: Schema.String,
 });
-const CodexUserInputAnswerObject = Schema.Struct({
-  answers: Schema.Array(Schema.String),
-});
 const isCodexResumeCursorSchema = Schema.is(CodexResumeCursorSchema);
-const isCodexUserInputAnswerObject = Schema.is(CodexUserInputAnswerObject);
 
 // TODO: Verify `packages/effect-codex-app-server/scripts/generate.ts` so the generated
 // `V2TurnStartParams` schema includes `collaborationMode` directly.
@@ -345,12 +341,13 @@ function buildCodexCollaborationMode(input: {
   }
   const model = normalizeCodexModelSlug(input.model) ?? DEFAULT_MODEL;
   const reasoningEffort = input.effort ?? "medium";
+  const mode = input.interactionMode === "plan-paused" ? "plan" : input.interactionMode;
   return {
-    mode: input.interactionMode,
+    mode,
     settings: {
       model,
       reasoning_effort: reasoningEffort,
-      developer_instructions: buildCodexDeveloperInstructions(input.interactionMode, {
+      developer_instructions: buildCodexDeveloperInstructions(mode, {
         model,
         reasoningEffort,
       }),
@@ -785,9 +782,6 @@ function toCodexUserInputAnswer(
   if (Array.isArray(value)) {
     const answers = value.filter((entry): entry is string => typeof entry === "string");
     return Effect.succeed({ answers });
-  }
-  if (isCodexUserInputAnswerObject(value)) {
-    return Effect.succeed({ answers: value.answers });
   }
   return Effect.fail(new CodexSessionRuntimeInvalidUserInputAnswersError({ questionId }));
 }

@@ -20,6 +20,13 @@ import {
 import { EditorId } from "./editor.ts";
 import { ModelCapabilities } from "./model.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
+import {
+  ProviderInteractionMode,
+  ProviderPlanReviewContextStrategy,
+  ProviderPlanWorkflow,
+  ProviderTurnDeliveryMode,
+  RuntimeMode,
+} from "./orchestration.ts";
 import { ServerSettings } from "./settings.ts";
 
 const KeybindingsMalformedConfigIssue = Schema.Struct({
@@ -192,6 +199,13 @@ export const ServerProvider = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
   skills: Schema.Array(ServerProviderSkill).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  supportedRuntimeModes: Schema.optional(Schema.Array(RuntimeMode)),
+  supportedInteractionModes: Schema.optional(Schema.Array(ProviderInteractionMode)),
+  supportedPlanWorkflows: Schema.optional(Schema.Array(ProviderPlanWorkflow)),
+  defaultPlanWorkflow: Schema.optional(ProviderPlanWorkflow),
+  supportedTurnDeliveryModes: Schema.optional(Schema.Array(ProviderTurnDeliveryMode)),
+  planReviewContextStrategies: Schema.optional(Schema.Array(ProviderPlanReviewContextStrategy)),
+  supportsPlanExecutionModelSelection: Schema.optional(Schema.Boolean),
   versionAdvisory: Schema.optionalKey(ServerProviderVersionAdvisory),
   updateState: Schema.optionalKey(ServerProviderUpdateState),
 });

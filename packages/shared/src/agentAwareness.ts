@@ -40,6 +40,7 @@ export interface ProjectThreadAwarenessInput {
     | "updatedAt"
     | "hasPendingApprovals"
     | "hasPendingUserInput"
+    | "hasPendingPlanReview"
   >;
 }
 
@@ -66,7 +67,7 @@ export function projectThreadAwareness(
     projectTitle: project.title,
     threadTitle: thread.title,
     phase,
-    headline: headlineForPhase(phase),
+    headline: headlineForPhase(phase, thread),
     ...(detail === undefined ? {} : { detail }),
     modelTitle: thread.modelSelection.model,
     updatedAt: thread.updatedAt,
@@ -80,7 +81,10 @@ function resolveThreadAwarenessPhase(
   if (thread.hasPendingApprovals) {
     return "waiting_for_approval";
   }
-  if (thread.hasPendingUserInput) {
+  // Plan review is an actionable wait (Execute/Refine/Cancel). Reuse the
+  // waiting_for_input phase so existing live-activity/push consumers keep
+  // treating it as attention-required without a new phase enum value.
+  if (thread.hasPendingPlanReview || thread.hasPendingUserInput) {
     return "waiting_for_input";
   }
   if (thread.session?.status === "error" || thread.latestTurn?.state === "error") {
@@ -116,7 +120,10 @@ function resolveThreadAwarenessPhase(
   return null;
 }
 
-function headlineForPhase(phase: AgentAwarenessPhase): string {
+function headlineForPhase(
+  phase: AgentAwarenessPhase,
+  thread: ProjectThreadAwarenessInput["thread"],
+): string {
   switch (phase) {
     case "starting":
       return "Starting agent";
@@ -125,7 +132,7 @@ function headlineForPhase(phase: AgentAwarenessPhase): string {
     case "waiting_for_approval":
       return "Approval needed";
     case "waiting_for_input":
-      return "Waiting for input";
+      return thread.hasPendingPlanReview ? "Plan review needed" : "Waiting for input";
     case "completed":
       return "Agent finished";
     case "failed":
@@ -144,6 +151,9 @@ function detailForPhase(
   }
   if (phase === "completed") {
     return "Review the completed task.";
+  }
+  if (phase === "waiting_for_input" && thread.hasPendingPlanReview) {
+    return "Execute, refine, or cancel the proposed plan.";
   }
   if (phase === "running" && thread.session?.providerName) {
     return `${thread.session.providerName} is active.`;

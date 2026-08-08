@@ -47,8 +47,13 @@ export type SetThreadRuntimeModeInput = CommandInput<"thread.runtime-mode.set">;
 export type SetThreadInteractionModeInput = CommandInput<"thread.interaction-mode.set">;
 export type StartThreadTurnInput = CommandInput<"thread.turn.start">;
 export type InterruptThreadTurnInput = CommandInput<"thread.turn.interrupt">;
+/** Cancel one concrete queued follow-up by turn id (OMP host-turn clientTurnId). */
+export type CancelQueuedThreadTurnInput = InterruptThreadTurnInput & {
+  readonly turnId: NonNullable<InterruptThreadTurnInput["turnId"]>;
+};
 export type RespondToThreadApprovalInput = CommandInput<"thread.approval.respond">;
 export type RespondToThreadUserInputInput = CommandInput<"thread.user-input.respond">;
+export type RespondToThreadPlanReviewInput = CommandInput<"thread.plan-review.respond">;
 export type RevertThreadCheckpointInput = CommandInput<"thread.checkpoint.revert">;
 export type StopThreadSessionInput = CommandInput<"thread.session.stop">;
 
@@ -287,6 +292,15 @@ export const interruptThreadTurn: (input: InterruptThreadTurnInput) => CommandEf
   });
 });
 
+/**
+ * Cancel a concrete native queued follow-up before promotion.
+ * Requires the queued turn id returned from the follow-up send/turn.queued activity.
+ */
+export const cancelQueuedThreadTurn: (input: CancelQueuedThreadTurnInput) => CommandEffect =
+  Effect.fn("EnvironmentCommands.cancelQueuedThreadTurn")(function* (input) {
+    return yield* interruptThreadTurn(input);
+  });
+
 export const respondToThreadApproval: (input: RespondToThreadApprovalInput) => CommandEffect =
   Effect.fn("EnvironmentCommands.respondToThreadApproval")(function* (input) {
     const metadata = yield* timestampedCommandMetadata(input);
@@ -304,6 +318,17 @@ export const respondToThreadUserInput: (input: RespondToThreadUserInputInput) =>
     return yield* dispatch({
       ...input,
       type: "thread.user-input.respond",
+      commandId: metadata.commandId,
+      createdAt: metadata.createdAt,
+    });
+  });
+
+export const respondToThreadPlanReview: (input: RespondToThreadPlanReviewInput) => CommandEffect =
+  Effect.fn("EnvironmentCommands.respondToThreadPlanReview")(function* (input) {
+    const metadata = yield* timestampedCommandMetadata(input);
+    return yield* dispatch({
+      ...input,
+      type: "thread.plan-review.respond",
       commandId: metadata.commandId,
       createdAt: metadata.createdAt,
     });

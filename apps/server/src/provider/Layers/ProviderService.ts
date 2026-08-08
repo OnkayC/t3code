@@ -840,7 +840,24 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         "provider.thread_id": input.threadId,
         "provider.request_id": input.requestId,
       });
-      yield* routed.adapter.respondToUserInput(routed.threadId, input.requestId, input.answers);
+      if (input.response.kind !== "submit") {
+        return yield* Effect.fail(
+          toValidationError(
+            "ProviderService.respondToUserInput",
+            `Provider adapter does not support '${input.response.kind}' user-input responses.`,
+          ),
+        );
+      }
+      const answers = Object.fromEntries(
+        Object.entries(input.response.answers).map(([questionId, answer]) => [
+          questionId,
+          answer.customInput ??
+            (answer.selectedOptions.length === 1
+              ? answer.selectedOptions[0]!
+              : [...answer.selectedOptions]),
+        ]),
+      );
+      yield* routed.adapter.respondToUserInput(routed.threadId, input.requestId, answers);
     }).pipe(
       withMetrics({
         counter: providerTurnsTotal,

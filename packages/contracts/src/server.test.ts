@@ -115,6 +115,28 @@ describe("ServerProvider", () => {
 
     expect(parsed.models[0]?.isLegacy).toBe(true);
   });
+  it("decodes native interaction capability snapshots", () => {
+    const parsed = decodeServerProvider({
+      ...baseProviderSnapshot,
+      instanceId: "omp",
+      driver: "omp",
+      supportedRuntimeModes: ["approval-required", "auto-accept-edits", "full-access"],
+      supportedInteractionModes: ["default", "plan", "plan-paused"],
+      supportedPlanWorkflows: ["parallel", "iterative"],
+      defaultPlanWorkflow: "parallel",
+      supportedTurnDeliveryModes: ["steer", "follow-up"],
+      planReviewContextStrategies: ["fresh", "preserve", "compact"],
+      supportsPlanExecutionModelSelection: true,
+    });
+
+    expect(parsed.supportedRuntimeModes).not.toContain("auto");
+    expect(parsed.supportedInteractionModes).toEqual(["default", "plan", "plan-paused"]);
+    expect(parsed.supportedPlanWorkflows).toEqual(["parallel", "iterative"]);
+    expect(parsed.defaultPlanWorkflow).toBe("parallel");
+    expect(parsed.supportedTurnDeliveryModes).toEqual(["steer", "follow-up"]);
+    expect(parsed.planReviewContextStrategies).toContain("compact");
+    expect(parsed.supportsPlanExecutionModelSelection).toBe(true);
+  });
 });
 
 describe("server config forward compatibility", () => {
