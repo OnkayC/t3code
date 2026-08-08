@@ -5,6 +5,7 @@ import {
   countAnsweredPendingUserInputQuestions,
   derivePendingUserInputProgress,
   findFirstUnansweredPendingUserInputQuestionIndex,
+  pendingUserInputAllowsSubmit,
   resolvePendingUserInputAnswer,
   setPendingUserInputCustomAnswer,
   togglePendingUserInputOptionSelection,
@@ -40,6 +41,14 @@ const multiSelectQuestion = {
   multiSelect: true,
 } as const;
 
+describe("pendingUserInputAllowsSubmit", () => {
+  it("defaults legacy prompts to submit and honors explicit action restrictions", () => {
+    expect(pendingUserInputAllowsSubmit(undefined)).toBe(true);
+    expect(pendingUserInputAllowsSubmit(["submit", "cancel"])).toBe(true);
+    expect(pendingUserInputAllowsSubmit(["chat", "cancel"])).toBe(false);
+  });
+});
+
 describe("resolvePendingUserInputAnswer", () => {
   it("prefers a custom answer over selected options", () => {
     expect(
@@ -48,6 +57,18 @@ describe("resolvePendingUserInputAnswer", () => {
         customAnswer: "Keep the existing envelope for one release",
       }),
     ).toBe("Keep the existing envelope for one release");
+  });
+  it("ignores custom answer when allowCustom is false", () => {
+    const noCustomQuestion = {
+      ...singleSelectQuestion,
+      allowCustom: false,
+    };
+    expect(
+      resolvePendingUserInputAnswer(noCustomQuestion, {
+        selectedOptionLabels: ["Orchestration-first"],
+        customAnswer: "Disallowed text",
+      }),
+    ).toBe("Orchestration-first");
   });
 
   it("falls back to the selected option for single-select questions", () => {
@@ -102,6 +123,38 @@ describe("togglePendingUserInputOptionSelection", () => {
       selectedOptionLabels: ["Web"],
     });
   });
+
+  it("preserves draft notes when selecting options", () => {
+    expect(
+      togglePendingUserInputOptionSelection(
+        singleSelectQuestion,
+        { note: "Keep this note", selectedOptionLabels: ["Web"] },
+        "Mobile",
+      ),
+    ).toEqual({
+      customAnswer: "",
+      selectedOptionLabels: ["Mobile"],
+      note: "Keep this note",
+    });
+  });
+});
+
+describe("setPendingUserInputCustomAnswer", () => {
+  it("preserves draft notes when editing a custom answer", () => {
+    expect(
+      setPendingUserInputCustomAnswer(
+        {
+          note: "Keep this note",
+          selectedOptionLabels: ["Web"],
+          customAnswer: "",
+        },
+        "Something custom",
+      ),
+    ).toEqual({
+      customAnswer: "Something custom",
+      note: "Keep this note",
+    });
+  });
 });
 
 describe("buildPendingUserInputAnswers", () => {
@@ -129,6 +182,7 @@ describe("buildPendingUserInputAnswers", () => {
           },
           compat: {
             customAnswer: "Keep the current envelope for one release window",
+            note: "Document the migration window",
           },
         },
       ),
@@ -137,6 +191,7 @@ describe("buildPendingUserInputAnswers", () => {
       compat: {
         selectedOptions: [],
         customInput: "Keep the current envelope for one release window",
+        note: "Document the migration window",
       },
     });
   });
@@ -155,6 +210,39 @@ describe("buildPendingUserInputAnswers", () => {
 
   it("returns null when any question is unanswered", () => {
     expect(buildPendingUserInputAnswers([singleSelectQuestion], {})).toBeNull();
+  });
+});
+it("omits customInput when allowCustom is false", () => {
+  const noCustomQuestion = {
+    ...singleSelectQuestion,
+    allowCustom: false,
+  };
+  expect(
+    buildPendingUserInputAnswers([noCustomQuestion], {
+      scope: {
+        selectedOptionLabels: ["Orchestration-first"],
+        customAnswer: "Disallowed text",
+      },
+    }),
+  ).toEqual({
+    scope: { selectedOptions: ["Orchestration-first"] },
+  });
+});
+
+it("omits note when supportsNote is false", () => {
+  expect(
+    buildPendingUserInputAnswers(
+      [singleSelectQuestion],
+      {
+        scope: {
+          selectedOptionLabels: ["Orchestration-first"],
+          note: "Discarded note",
+        },
+      },
+      false,
+    ),
+  ).toEqual({
+    scope: { selectedOptions: ["Orchestration-first"] },
   });
 });
 

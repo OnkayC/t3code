@@ -4,13 +4,22 @@ import {
   ProjectId,
   type ModelSelection,
   type ProviderDriverKind,
+  type ProviderInteractionMode,
+  type ProviderPlanWorkflow,
   type ServerProvider,
   type ScopedProjectRef,
   type ScopedThreadRef,
   type ThreadId,
   type TurnId,
 } from "@t3tools/contracts";
-import { type ChatMessage, type SessionPhase, type Thread, type ThreadShell } from "../types";
+import { resolveProviderTurnDeliveryMode } from "@t3tools/client-runtime/state/providerInteractionRuntime";
+import {
+  DEFAULT_INTERACTION_MODE,
+  type ChatMessage,
+  type SessionPhase,
+  type Thread,
+  type ThreadShell,
+} from "../types";
 import { type ComposerImageAttachment, type DraftThreadState } from "../composerDraftStore";
 import * as Schema from "effect/Schema";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -27,6 +36,53 @@ export const MAX_HIDDEN_MOUNTED_TERMINAL_THREADS = 10;
 export const MAX_HIDDEN_MOUNTED_PREVIEW_THREADS = 3;
 
 export const LastInvokedScriptByProjectSchema = Schema.Record(ProjectId, Schema.String);
+
+export function resolveComposerTurnDeliveryMode(input: {
+  readonly phase: SessionPhase;
+  readonly provider: Pick<ServerProvider, "supportedTurnDeliveryModes"> | null | undefined;
+  /** True when sending would first replace the live session (e.g. runtime-mode change). */
+  readonly wouldReplaceActiveSession?: boolean;
+}) {
+  if (input.wouldReplaceActiveSession === true) {
+    return undefined;
+  }
+  return resolveProviderTurnDeliveryMode({
+    intent: input.phase === "running" ? "queue" : "send",
+    provider: input.provider,
+  });
+}
+
+export function resolveComposerInteractionMode(input: {
+  readonly isServerThread: boolean;
+  readonly composerInteractionMode: ProviderInteractionMode | null | undefined;
+  readonly threadInteractionMode: ProviderInteractionMode | null | undefined;
+}): ProviderInteractionMode {
+  if (input.isServerThread) {
+    return input.threadInteractionMode ?? DEFAULT_INTERACTION_MODE;
+  }
+  return input.composerInteractionMode ?? input.threadInteractionMode ?? DEFAULT_INTERACTION_MODE;
+}
+
+export function resolveComposerPlanWorkflow(input: {
+  readonly isServerThread: boolean;
+  readonly composerPlanWorkflow: ProviderPlanWorkflow | null | undefined;
+  readonly threadPlanWorkflow: ProviderPlanWorkflow | null | undefined;
+}): ProviderPlanWorkflow | undefined {
+  const workflow = input.isServerThread
+    ? input.threadPlanWorkflow
+    : (input.composerPlanWorkflow ?? input.threadPlanWorkflow);
+  return workflow ?? undefined;
+}
+
+export function reconcileCancellingQueuedTurnIds(
+  cancellingTurnIds: ReadonlyArray<string>,
+  queuedTurnIds: ReadonlyArray<string>,
+): ReadonlyArray<string> {
+  if (cancellingTurnIds.length === 0) return cancellingTurnIds;
+  const queuedTurnIdSet = new Set(queuedTurnIds);
+  const next = cancellingTurnIds.filter((turnId) => queuedTurnIdSet.has(turnId));
+  return next.length === cancellingTurnIds.length ? cancellingTurnIds : next;
+}
 
 export function startNewThreadForProject(
   projectRef: ScopedProjectRef | null,

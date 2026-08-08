@@ -1,8 +1,15 @@
-import { CheckpointRef, EnvironmentId, MessageId, TurnId } from "@t3tools/contracts";
+import {
+  ApprovalRequestId,
+  CheckpointRef,
+  EnvironmentId,
+  MessageId,
+  TurnId,
+} from "@t3tools/contracts";
 import { createRef, type ReactNode, type Ref } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import type { LegendListRef } from "@legendapp/list/react";
+import type { PendingPlanReview } from "../../session-logic";
 
 vi.mock("@legendapp/list/react", async () => {
   const legendListTestId = "legend-list";
@@ -225,6 +232,22 @@ function buildUserTimelineEntry(text: string) {
   };
 }
 
+const PLAN_REVIEW_MARKDOWN = "# Native OMP plan\n\n- Preserve RPC parity";
+
+function buildPendingPlanReview(): PendingPlanReview {
+  return {
+    requestId: ApprovalRequestId.make("plan-review-native-1"),
+    createdAt: MESSAGE_CREATED_AT,
+    turnId: TurnId.make("turn-native-plan"),
+    title: "Native OMP plan",
+    planArtifactId: "artifact-native-plan-1",
+    planArtifactUrl: "https://example.test/artifacts/native-plan-1",
+    planMarkdown: PLAN_REVIEW_MARKDOWN,
+    allowedContextStrategies: ["fresh", "preserve"],
+    executionModels: [],
+  };
+}
+
 describe("MessagesTimeline", () => {
   it("uses the larger leading inset only when the top fade is enabled", () => {
     const timelineEntries = [buildUserTimelineEntry("Hello")];
@@ -240,6 +263,86 @@ describe("MessagesTimeline", () => {
     expect(compactMarkup).not.toContain("chat-timeline-scroll-fade");
     expect(fadedMarkup).toContain('class="h-10 sm:h-12"');
     expect(fadedMarkup).toContain("chat-timeline-scroll-fade");
+  });
+
+  it("renders a pending native plan review when no proposed-plan row exists", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[]}
+        pendingPlanReview={buildPendingPlanReview()}
+        onRespondToPlanReview={() => {}}
+      />,
+    );
+
+    expect(markup).toContain('href="https://example.test/artifacts/native-plan-1"');
+    expect(markup).toContain("Native OMP plan");
+    expect(markup).toContain("Open artifact");
+    expect(markup).toContain("Execute plan");
+    expect(markup).toContain("Request refinement");
+    expect(markup).toContain("Cancel review");
+    expect(markup).not.toContain("Send a message to start the conversation.");
+    expect(markup).toContain('data-timeline-row-id="pending-plan-review:plan-review-native-1"');
+  });
+
+  it("does not duplicate plan review controls when a proposed-plan row matches", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        pendingPlanReview={buildPendingPlanReview()}
+        onRespondToPlanReview={() => {}}
+        timelineEntries={[
+          {
+            id: "plan:thread-1:native",
+            kind: "proposed-plan",
+            createdAt: MESSAGE_CREATED_AT,
+            proposedPlan: {
+              id: "plan:thread-1:native",
+              turnId: TurnId.make("turn-native-plan"),
+              planMarkdown: PLAN_REVIEW_MARKDOWN,
+              implementedAt: null,
+              implementationThreadId: null,
+              createdAt: MESSAGE_CREATED_AT,
+              updatedAt: MESSAGE_CREATED_AT,
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup.match(/>Execute plan</g)).toHaveLength(1);
+    expect(markup.match(/>Request refinement</g)).toHaveLength(1);
+    expect(markup.match(/>Cancel review</g)).toHaveLength(1);
+    expect(markup).not.toContain('data-timeline-row-id="pending-plan-review:');
+  });
+
+  it("keeps a current review standalone when older plan markdown is identical", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        pendingPlanReview={buildPendingPlanReview()}
+        onRespondToPlanReview={() => {}}
+        timelineEntries={[
+          {
+            id: "plan:thread-1:old-identical",
+            kind: "proposed-plan",
+            createdAt: MESSAGE_CREATED_AT,
+            proposedPlan: {
+              id: "plan:thread-1:old-identical",
+              turnId: TurnId.make("turn-old-identical"),
+              planMarkdown: PLAN_REVIEW_MARKDOWN,
+              implementedAt: null,
+              implementationThreadId: null,
+              createdAt: MESSAGE_CREATED_AT,
+              updatedAt: MESSAGE_CREATED_AT,
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('data-timeline-row-id="pending-plan-review:plan-review-native-1"');
+    expect(markup.match(/>Execute plan</g)).toHaveLength(1);
   });
 
   it("keeps assistant changed-files headers sticky below the thread header", () => {
