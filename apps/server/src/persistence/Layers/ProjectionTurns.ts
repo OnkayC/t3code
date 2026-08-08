@@ -10,12 +10,14 @@ import * as Struct from "effect/Struct";
 import { toPersistenceDecodeError, toPersistenceSqlError } from "../Errors.ts";
 import {
   ClearCheckpointTurnConflictInput,
+  DeleteProjectionPendingTurnStartInput,
   DeleteProjectionTurnsByThreadInput,
   GetProjectionPendingTurnStartInput,
   GetProjectionTurnByTurnIdInput,
   ListProjectionTurnsByThreadInput,
   ProjectionPendingTurnStart,
   ProjectionTurn,
+  SettleProjectionPendingTurnInput,
   ProjectionTurnById,
   ProjectionTurnRepository,
   type ProjectionTurnRepositoryShape,
@@ -53,6 +55,7 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
           pending_message_id,
           source_proposed_plan_thread_id,
           source_proposed_plan_id,
+          workflow,
           assistant_message_id,
           state,
           requested_at,
@@ -69,6 +72,7 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
           ${row.pendingMessageId},
           ${row.sourceProposedPlanThreadId},
           ${row.sourceProposedPlanId},
+          ${row.workflow},
           ${row.assistantMessageId},
           ${row.state},
           ${row.requestedAt},
@@ -84,6 +88,7 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
           pending_message_id = excluded.pending_message_id,
           source_proposed_plan_thread_id = excluded.source_proposed_plan_thread_id,
           source_proposed_plan_id = excluded.source_proposed_plan_id,
+          workflow = excluded.workflow,
           assistant_message_id = excluded.assistant_message_id,
           state = excluded.state,
           requested_at = excluded.requested_at,
@@ -102,7 +107,6 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
       sql`
         DELETE FROM projection_turns
         WHERE thread_id = ${threadId}
-          AND turn_id IS NULL
           AND state = 'pending'
           AND checkpoint_turn_count IS NULL
       `,
@@ -118,6 +122,7 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
           pending_message_id,
           source_proposed_plan_thread_id,
           source_proposed_plan_id,
+          workflow,
           assistant_message_id,
           state,
           requested_at,
@@ -134,6 +139,7 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
           ${row.messageId},
           ${row.sourceProposedPlanThreadId},
           ${row.sourceProposedPlanId},
+          ${row.workflow},
           NULL,
           'pending',
           ${row.requestedAt},
@@ -157,6 +163,7 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
           pending_message_id AS "messageId",
           source_proposed_plan_thread_id AS "sourceProposedPlanThreadId",
           source_proposed_plan_id AS "sourceProposedPlanId",
+          workflow,
           requested_at AS "requestedAt"
         FROM projection_turns
         WHERE thread_id = ${threadId}
@@ -164,7 +171,7 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
           AND state = 'pending'
           AND pending_message_id IS NOT NULL
           AND checkpoint_turn_count IS NULL
-        ORDER BY requested_at DESC
+        ORDER BY requested_at ASC, row_id ASC
         LIMIT 1
       `,
   });
@@ -181,6 +188,7 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
           source_proposed_plan_thread_id AS "sourceProposedPlanThreadId",
           source_proposed_plan_id AS "sourceProposedPlanId",
           assistant_message_id AS "assistantMessageId",
+          workflow,
           state,
           requested_at AS "requestedAt",
           started_at AS "startedAt",
@@ -214,6 +222,7 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
           source_proposed_plan_thread_id AS "sourceProposedPlanThreadId",
           source_proposed_plan_id AS "sourceProposedPlanId",
           assistant_message_id AS "assistantMessageId",
+          workflow,
           state,
           requested_at AS "requestedAt",
           started_at AS "startedAt",
@@ -245,6 +254,33 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
       `,
   });
 
+  const deletePendingProjectionTurn = SqlSchema.void({
+    Request: DeleteProjectionPendingTurnStartInput,
+    execute: ({ threadId, messageId }) =>
+      sql`
+        DELETE FROM projection_turns
+        WHERE thread_id = ${threadId}
+          AND turn_id IS NULL
+          AND state = 'pending'
+          AND pending_message_id = ${messageId}
+          AND checkpoint_turn_count IS NULL
+      `,
+  });
+  const settlePendingProjectionTurn = SqlSchema.void({
+    Request: SettleProjectionPendingTurnInput,
+    execute: ({ threadId, turnId, state, completedAt }) =>
+      sql`
+        UPDATE projection_turns
+        SET
+          state = ${state},
+          completed_at = ${completedAt}
+        WHERE thread_id = ${threadId}
+          AND turn_id = ${turnId}
+          AND state = 'pending'
+          AND checkpoint_turn_count IS NULL
+      `,
+  });
+
   const deleteProjectionTurnsByThread = SqlSchema.void({
     Request: DeleteProjectionTurnsByThreadInput,
     execute: ({ threadId }) =>
@@ -264,21 +300,15 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
       ),
     );
 
-  const replacePendingTurnStart: ProjectionTurnRepositoryShape["replacePendingTurnStart"] = (row) =>
-    sql
-      .withTransaction(
-        clearPendingProjectionTurnsByThread({ threadId: row.threadId }).pipe(
-          Effect.flatMap(() => insertPendingProjectionTurn(row)),
+  const insertPendingTurnStart: ProjectionTurnRepositoryShape["insertPendingTurnStart"] = (row) =>
+    insertPendingProjectionTurn(row).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionTurnRepository.insertPendingTurnStart:query",
+          "ProjectionTurnRepository.insertPendingTurnStart:encodeRequest",
         ),
-      )
-      .pipe(
-        Effect.mapError(
-          toPersistenceSqlOrDecodeError(
-            "ProjectionTurnRepository.replacePendingTurnStart:query",
-            "ProjectionTurnRepository.replacePendingTurnStart:encodeRequest",
-          ),
-        ),
-      );
+      ),
+    );
 
   const getPendingTurnStartByThreadId: ProjectionTurnRepositoryShape["getPendingTurnStartByThreadId"] =
     (input) =>
@@ -288,13 +318,28 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
         ),
       );
 
-  const deletePendingTurnStartByThreadId: ProjectionTurnRepositoryShape["deletePendingTurnStartByThreadId"] =
+  const deletePendingTurnsByThreadId: ProjectionTurnRepositoryShape["deletePendingTurnsByThreadId"] =
     (input) =>
       clearPendingProjectionTurnsByThread(input).pipe(
         Effect.mapError(
-          toPersistenceSqlError("ProjectionTurnRepository.deletePendingTurnStartByThreadId:query"),
+          toPersistenceSqlError("ProjectionTurnRepository.deletePendingTurnsByThreadId:query"),
         ),
       );
+
+  const deletePendingTurnStart: ProjectionTurnRepositoryShape["deletePendingTurnStart"] = (input) =>
+    deletePendingProjectionTurn(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionTurnRepository.deletePendingTurnStart:query"),
+      ),
+    );
+  const settlePendingTurnByTurnId: ProjectionTurnRepositoryShape["settlePendingTurnByTurnId"] = (
+    input,
+  ) =>
+    settlePendingProjectionTurn(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionTurnRepository.settlePendingTurnByTurnId:query"),
+      ),
+    );
 
   const listByThreadId: ProjectionTurnRepositoryShape["listByThreadId"] = (input) =>
     listProjectionTurnsByThread(input).pipe(
@@ -339,9 +384,11 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
 
   return {
     upsertByTurnId,
-    replacePendingTurnStart,
+    insertPendingTurnStart,
     getPendingTurnStartByThreadId,
-    deletePendingTurnStartByThreadId,
+    deletePendingTurnsByThreadId,
+    deletePendingTurnStart,
+    settlePendingTurnByTurnId,
     listByThreadId,
     getByTurnId,
     clearCheckpointTurnConflict,

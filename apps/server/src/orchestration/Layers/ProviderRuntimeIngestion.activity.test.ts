@@ -3,6 +3,7 @@ import {
   ProviderDriverKind,
   RuntimeTaskId,
   ThreadId,
+  TurnId,
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
@@ -140,5 +141,29 @@ describe("runtimeEventToActivities tool streaming persistence", () => {
     expect(activities).toHaveLength(1);
     const payload = activities[0]?.payload as Record<string, unknown>;
     expect(payload.data).toEqual(streamingData);
+  });
+});
+
+describe("runtimeEventToActivities turn lifecycle", () => {
+  it("persists queued-turn cancellation as a terminal activity", () => {
+    const event = {
+      ...base,
+      type: "turn.aborted",
+      eventId: EventId.make("evt-turn-aborted"),
+      turnId: TurnId.make("turn-queued"),
+      payload: { reason: "Queued follow-up cancelled." },
+    } satisfies ProviderRuntimeEvent;
+
+    expect(runtimeEventToActivities(event)).toEqual([
+      {
+        id: "evt-turn-aborted",
+        createdAt: base.createdAt,
+        tone: "info",
+        kind: "turn.aborted",
+        summary: "Turn cancelled",
+        payload: { reason: "Queued follow-up cancelled." },
+        turnId: "turn-queued",
+      },
+    ]);
   });
 });
