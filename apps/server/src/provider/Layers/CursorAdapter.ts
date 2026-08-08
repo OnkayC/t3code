@@ -13,7 +13,7 @@ import {
   type ProviderInteractionMode,
   type ProviderRuntimeEvent,
   type ProviderSession,
-  type ProviderUserInputAnswers,
+  type ProviderUserInputResponse,
   ProviderDriverKind,
   ProviderInstanceId,
   RuntimeRequestId,
@@ -77,6 +77,7 @@ import {
 import { type CursorAdapterShape } from "../Services/CursorAdapter.ts";
 import { resolveCursorAcpBaseModelId } from "./CursorProvider.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+type CursorUserInputAnswers = Readonly<Record<string, string | ReadonlyArray<string>>>;
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
 
 const PROVIDER = ProviderDriverKind.make("cursor");
@@ -119,7 +120,25 @@ interface PendingApproval {
 }
 
 interface PendingUserInput {
-  readonly answers: Deferred.Deferred<ProviderUserInputAnswers>;
+  readonly answers: Deferred.Deferred<CursorUserInputAnswers>;
+}
+
+function toCursorUserInputAnswers(
+  answers: Extract<ProviderUserInputResponse, { readonly kind: "submit" }>["answers"],
+): CursorUserInputAnswers {
+  return Object.fromEntries(
+    Object.entries(answers).map(([questionId, answer]) => {
+      if (answer.customInput !== undefined) {
+        return [questionId, answer.customInput] as const;
+      }
+      return [
+        questionId,
+        answer.selectedOptions.length === 1
+          ? answer.selectedOptions[0]!
+          : [...answer.selectedOptions],
+      ] as const;
+    }),
+  );
 }
 
 interface CursorSessionContext {
@@ -582,7 +601,7 @@ export function makeCursorAdapter(
                   );
                   const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
                   const runtimeRequestId = RuntimeRequestId.make(requestId);
-                  const answers = yield* Deferred.make<ProviderUserInputAnswers>();
+                  const answers = yield* Deferred.make<CursorUserInputAnswers>();
                   pendingUserInputs.set(requestId, { answers });
                   yield* offerRuntimeEvent({
                     type: "user-input.requested",
@@ -591,7 +610,10 @@ export function makeCursorAdapter(
                     threadId: input.threadId,
                     turnId: ctx?.activeTurnId,
                     requestId: runtimeRequestId,
-                    payload: { questions: extractAskQuestions(params) },
+                    payload: {
+                      questions: extractAskQuestions(params),
+                      allowedActions: ["submit"],
+                    },
                     raw: {
                       source: "acp.cursor.extension",
                       method: "cursor/ask_question",
@@ -607,7 +629,7 @@ export function makeCursorAdapter(
                     threadId: input.threadId,
                     turnId: ctx?.activeTurnId,
                     requestId: runtimeRequestId,
-                    payload: { answers: resolved },
+                    payload: { outcome: "submitted", answers: resolved },
                   });
                   return { answers: resolved };
                 }),
@@ -1099,7 +1121,7 @@ export function makeCursorAdapter(
     const respondToUserInput: CursorAdapterShape["respondToUserInput"] = (
       threadId,
       requestId,
-      answers,
+      response: ProviderUserInputResponse,
     ) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(threadId);
@@ -1111,7 +1133,14 @@ export function makeCursorAdapter(
             detail: `Unknown pending user-input request: ${requestId}`,
           });
         }
-        yield* Deferred.succeed(pending.answers, answers);
+        if (response.kind !== "submit") {
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "cursor/ask_question",
+            detail: `User-input action '${response.kind}' is not supported by Cursor.`,
+          });
+        }
+        yield* Deferred.succeed(pending.answers, toCursorUserInputAnswers(response.answers));
       });
 
     const readThread: CursorAdapterShape["readThread"] = (threadId) =>

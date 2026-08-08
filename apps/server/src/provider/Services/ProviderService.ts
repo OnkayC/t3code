@@ -14,17 +14,19 @@
 import type {
   ProviderInterruptTurnInput,
   ProviderInstanceId,
+  ProviderRespondToPlanReviewInput,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
+  ProviderSetInteractionModeInput,
   ProviderStopSessionInput,
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
-  ThreadId,
   ProviderTurnStartResult,
+  ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
@@ -72,6 +74,16 @@ export interface ProviderServiceShape {
    */
   readonly respondToUserInput: (
     input: ProviderRespondToUserInputInput,
+  ) => Effect.Effect<void, ProviderServiceError>;
+
+  /** Respond to a native same-thread plan review. */
+  readonly respondToPlanReview: (
+    input: ProviderRespondToPlanReviewInput,
+  ) => Effect.Effect<ProviderTurnStartResult | void, ProviderServiceError>;
+
+  /** Change provider-native interaction/plan mode. */
+  readonly setInteractionMode: (
+    input: ProviderSetInteractionModeInput,
   ) => Effect.Effect<void, ProviderServiceError>;
 
   /**
