@@ -5,6 +5,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "../NodeSqliteClient.ts";
+import Migration0041 from "./041_ProjectionProjectsDefaultThreadEnvMode.ts";
 
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
 
@@ -73,6 +74,32 @@ layer("039_ProjectionWorkflowColumns", (it) => {
       `;
       assert.deepEqual(threads, [{ workflow: "parallel" }]);
       assert.deepEqual(turns, [{ workflow: "iterative" }]);
+    }),
+  );
+
+  it.effect("repairs workflow columns for databases that already ran upstream migration 039", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 38 });
+      yield* sql`
+        ALTER TABLE projection_projects
+        ADD COLUMN default_thread_env_mode TEXT
+      `;
+
+      yield* Migration0041;
+
+      const threadColumns = yield* sql<{ readonly name: string }>`
+        PRAGMA table_info(projection_threads)
+      `;
+      const turnColumns = yield* sql<{ readonly name: string }>`
+        PRAGMA table_info(projection_turns)
+      `;
+      const projectColumns = yield* sql<{ readonly name: string }>`
+        PRAGMA table_info(projection_projects)
+      `;
+      assert.isTrue(threadColumns.some((column) => column.name === "workflow"));
+      assert.isTrue(turnColumns.some((column) => column.name === "workflow"));
+      assert.isTrue(projectColumns.some((column) => column.name === "default_thread_env_mode"));
     }),
   );
 });

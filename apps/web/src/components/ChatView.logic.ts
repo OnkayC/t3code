@@ -34,6 +34,7 @@ import type { DraftThreadEnvMode } from "../composerDraftStore";
 export const LAST_INVOKED_SCRIPT_BY_PROJECT_KEY = "t3code:last-invoked-script-by-project";
 export const MAX_HIDDEN_MOUNTED_TERMINAL_THREADS = 10;
 export const MAX_HIDDEN_MOUNTED_PREVIEW_THREADS = 3;
+export const ENVIRONMENT_RECONNECT_WARNING_GRACE_MS = 2_000;
 
 export const LastInvokedScriptByProjectSchema = Schema.Record(ProjectId, Schema.String);
 
@@ -82,6 +83,18 @@ export function reconcileCancellingQueuedTurnIds(
   const queuedTurnIdSet = new Set(queuedTurnIds);
   const next = cancellingTurnIds.filter((turnId) => queuedTurnIdSet.has(turnId));
   return next.length === cancellingTurnIds.length ? cancellingTurnIds : next;
+}
+
+export function scheduleEnvironmentReconnectWarning(showWarning: () => void): () => void {
+  const timeoutId = globalThis.setTimeout(showWarning, ENVIRONMENT_RECONNECT_WARNING_GRACE_MS);
+  return () => globalThis.clearTimeout(timeoutId);
+}
+
+export function hasEnvironmentReconnectWarningGraceElapsed(
+  activeEnvironmentId: EnvironmentId | null,
+  elapsedEnvironmentId: EnvironmentId | null,
+): boolean {
+  return activeEnvironmentId !== null && activeEnvironmentId === elapsedEnvironmentId;
 }
 
 export function startNewThreadForProject(
