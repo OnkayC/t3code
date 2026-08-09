@@ -1143,7 +1143,10 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         threadId,
         ApprovalRequestId.make(String(requestedEvent.requestId)),
         {
-          "Which scope should Grok use?": "Workspace",
+          kind: "submit",
+          answers: {
+            "Which scope should Grok use?": { selectedOptions: ["Workspace"] },
+          },
         },
       );
 

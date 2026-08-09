@@ -7,6 +7,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ProviderInteractionMode,
+  ProviderPlanWorkflow,
   ProviderDriverKind,
   ProviderOptionSelection,
   PreviewAnnotationPayloadSchema,
@@ -147,6 +148,7 @@ const PersistedComposerThreadDraftState = Schema.Struct({
   activeProvider: Schema.optionalKey(Schema.NullOr(ProviderInstanceId)),
   runtimeMode: Schema.optionalKey(RuntimeMode),
   interactionMode: Schema.optionalKey(ProviderInteractionMode),
+  workflow: Schema.optionalKey(Schema.NullOr(ProviderPlanWorkflow)),
 });
 type PersistedComposerThreadDraftState = typeof PersistedComposerThreadDraftState.Type;
 
@@ -212,6 +214,7 @@ const PersistedDraftThreadState = Schema.Struct({
   createdAt: Schema.String,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
+  workflow: Schema.optionalKey(Schema.NullOr(ProviderPlanWorkflow)),
   branch: Schema.NullOr(Schema.String),
   worktreePath: Schema.NullOr(Schema.String),
   envMode: DraftThreadEnvModeSchema,
@@ -275,6 +278,7 @@ export interface ComposerThreadDraftState {
   activeProvider: ProviderInstanceId | null;
   runtimeMode: RuntimeMode | null;
   interactionMode: ProviderInteractionMode | null;
+  workflow: ProviderPlanWorkflow | null;
 }
 
 /**
@@ -291,6 +295,7 @@ export interface DraftSessionState {
   createdAt: string;
   runtimeMode: RuntimeMode;
   interactionMode: ProviderInteractionMode;
+  workflow: ProviderPlanWorkflow | null;
   branch: string | null;
   worktreePath: string | null;
   envMode: DraftThreadEnvMode;
@@ -324,7 +329,7 @@ type ComposerThreadTarget = ScopedThreadRef | DraftId;
  * - draft sessions keyed by `DraftId`
  * - server thread composer state keyed by `ScopedThreadRef`
  */
-interface ComposerDraftStoreState {
+export interface ComposerDraftStoreState {
   draftsByThreadKey: Record<string, ComposerThreadDraftState>;
   draftThreadsByThreadKey: Record<string, DraftThreadState>;
   logicalProjectDraftThreadKeyByLogicalProjectKey: Record<string, string>;
@@ -359,6 +364,7 @@ interface ComposerDraftStoreState {
       startFromOrigin?: boolean;
       runtimeMode?: RuntimeMode;
       interactionMode?: ProviderInteractionMode;
+      workflow?: ProviderPlanWorkflow | null;
     },
   ) => void;
   /** Creates or updates the draft session tracked for a concrete project ref. */
@@ -374,6 +380,7 @@ interface ComposerDraftStoreState {
       startFromOrigin?: boolean;
       runtimeMode?: RuntimeMode;
       interactionMode?: ProviderInteractionMode;
+      workflow?: ProviderPlanWorkflow | null;
     },
   ) => void;
   /** Updates mutable draft-session metadata without touching composer content. */
@@ -388,6 +395,7 @@ interface ComposerDraftStoreState {
       startFromOrigin?: boolean;
       runtimeMode?: RuntimeMode;
       interactionMode?: ProviderInteractionMode;
+      workflow?: ProviderPlanWorkflow | null;
     },
   ) => void;
   clearProjectDraftThreadId: (projectRef: ScopedProjectRef) => void;
@@ -442,6 +450,7 @@ interface ComposerDraftStoreState {
   setInteractionMode: (
     threadRef: ComposerThreadTarget,
     interactionMode: ProviderInteractionMode | null | undefined,
+    workflow?: ProviderPlanWorkflow | null | undefined,
   ) => void;
   addImage: (threadRef: ComposerThreadTarget, image: ComposerImageAttachment) => void;
   addImages: (threadRef: ComposerThreadTarget, images: ComposerImageAttachment[]) => void;
@@ -600,6 +609,7 @@ const EMPTY_THREAD_DRAFT = Object.freeze<ComposerThreadDraftState>({
   activeProvider: null,
   runtimeMode: null,
   interactionMode: null,
+  workflow: null,
 });
 
 /**
@@ -622,6 +632,7 @@ export function createEmptyThreadDraft(): ComposerThreadDraftState {
     activeProvider: null,
     runtimeMode: null,
     interactionMode: null,
+    workflow: null,
   };
 }
 
@@ -694,7 +705,8 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
     Object.keys(draft.modelSelectionByProvider).length === 0 &&
     draft.activeProvider === null &&
     draft.runtimeMode === null &&
-    draft.interactionMode === null
+    draft.interactionMode === null &&
+    draft.workflow === null
   );
 }
 
@@ -1338,6 +1350,7 @@ function createDraftThreadState(
     startFromOrigin?: boolean;
     runtimeMode?: RuntimeMode;
     interactionMode?: ProviderInteractionMode;
+    workflow?: ProviderPlanWorkflow | null;
   },
 ): DraftThreadState {
   // A project change (including switching environments within a logical
@@ -1373,6 +1386,9 @@ function createDraftThreadState(
     runtimeMode: options?.runtimeMode ?? existingThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
     interactionMode:
       options?.interactionMode ?? existingThread?.interactionMode ?? DEFAULT_INTERACTION_MODE,
+    // Explicit workflow: null must win over an existing draft workflow.
+    workflow:
+      options?.workflow !== undefined ? options.workflow : (existingThread?.workflow ?? null),
     branch: nextBranch,
     worktreePath: nextWorktreePath,
     envMode:
@@ -1406,6 +1422,7 @@ function draftThreadsEqual(left: DraftThreadState | undefined, right: DraftThrea
     left.createdAt === right.createdAt &&
     left.runtimeMode === right.runtimeMode &&
     left.interactionMode === right.interactionMode &&
+    left.workflow === right.workflow &&
     left.branch === right.branch &&
     left.worktreePath === right.worktreePath &&
     left.envMode === right.envMode &&
@@ -1546,9 +1563,15 @@ function normalizePersistedDraftThreads(
           : DEFAULT_RUNTIME_MODE,
         interactionMode:
           candidateDraftThread.interactionMode === "plan" ||
+          candidateDraftThread.interactionMode === "plan-paused" ||
           candidateDraftThread.interactionMode === "default"
             ? candidateDraftThread.interactionMode
             : DEFAULT_INTERACTION_MODE,
+        workflow:
+          candidateDraftThread.workflow === "parallel" ||
+          candidateDraftThread.workflow === "iterative"
+            ? candidateDraftThread.workflow
+            : null,
         branch: typeof branch === "string" ? branch : null,
         worktreePath: normalizedWorktreePath,
         envMode: normalizeDraftThreadEnvMode(candidateDraftThread.envMode, normalizedWorktreePath),
@@ -1595,6 +1618,7 @@ function normalizePersistedDraftThreads(
           createdAt: new Date().toISOString(),
           runtimeMode: DEFAULT_RUNTIME_MODE,
           interactionMode: DEFAULT_INTERACTION_MODE,
+          workflow: null,
           branch: null,
           worktreePath: null,
           envMode: "local",
@@ -2145,6 +2169,7 @@ function toHydratedThreadDraft(
     activeProvider,
     runtimeMode: persistedDraft.runtimeMode ?? null,
     interactionMode: persistedDraft.interactionMode ?? null,
+    workflow: persistedDraft.workflow ?? null,
   };
 }
 
@@ -2166,6 +2191,7 @@ function toHydratedDraftThreadState(
     createdAt: persistedDraftThread.createdAt,
     runtimeMode: persistedDraftThread.runtimeMode,
     interactionMode: persistedDraftThread.interactionMode,
+    workflow: persistedDraftThread.workflow ?? null,
     branch: persistedDraftThread.branch,
     worktreePath: persistedDraftThread.worktreePath,
     envMode: persistedDraftThread.envMode,
@@ -2373,6 +2399,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                   : options.createdAt || existing.createdAt,
               runtimeMode: options.runtimeMode ?? existing.runtimeMode,
               interactionMode: options.interactionMode ?? existing.interactionMode,
+              workflow: options.workflow !== undefined ? options.workflow : existing.workflow,
               branch: nextBranch,
               worktreePath: nextWorktreePath,
               envMode:
@@ -2387,6 +2414,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               nextDraftThread.createdAt === existing.createdAt &&
               nextDraftThread.runtimeMode === existing.runtimeMode &&
               nextDraftThread.interactionMode === existing.interactionMode &&
+              nextDraftThread.workflow === existing.workflow &&
               nextDraftThread.branch === existing.branch &&
               nextDraftThread.worktreePath === existing.worktreePath &&
               nextDraftThread.envMode === existing.envMode &&
@@ -2816,25 +2844,31 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             return { draftsByThreadKey: nextDraftsByThreadKey };
           });
         },
-        setInteractionMode: (threadRef, interactionMode) => {
+        setInteractionMode: (threadRef, interactionMode, workflow) => {
           const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
           if (threadKey.length === 0) {
             return;
           }
           const nextInteractionMode =
-            interactionMode === "plan" || interactionMode === "default" ? interactionMode : null;
+            interactionMode === "plan" ||
+            interactionMode === "plan-paused" ||
+            interactionMode === "default"
+              ? interactionMode
+              : null;
           set((state) => {
             const existing = state.draftsByThreadKey[threadKey];
-            if (!existing && nextInteractionMode === null) {
+            if (!existing && nextInteractionMode === null && workflow === undefined) {
               return state;
             }
             const base = existing ?? createEmptyThreadDraft();
-            if (base.interactionMode === nextInteractionMode) {
+            const nextWorkflow = workflow !== undefined ? workflow : base.workflow;
+            if (base.interactionMode === nextInteractionMode && base.workflow === nextWorkflow) {
               return state;
             }
             const nextDraft: ComposerThreadDraftState = {
               ...base,
               interactionMode: nextInteractionMode,
+              workflow: nextWorkflow,
             };
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
             if (shouldRemoveDraft(nextDraft)) {

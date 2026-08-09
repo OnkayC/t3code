@@ -7,6 +7,8 @@ import {
 } from "../../pendingUserInput";
 import { CheckIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
+import { Button } from "../ui/button";
+import { Textarea } from "../ui/textarea";
 
 interface PendingUserInputPanelProps {
   pendingUserInputs: PendingUserInput[];
@@ -15,6 +17,8 @@ interface PendingUserInputPanelProps {
   questionIndex: number;
   onToggleOption: (questionId: string, optionLabel: string) => void;
   onAdvance: () => void;
+  onChangeNote: (questionId: string, note: string) => void;
+  onRespondAction: (action: "chat" | "cancel") => void;
 }
 
 export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserInputPanel({
@@ -24,6 +28,8 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
   questionIndex,
   onToggleOption,
   onAdvance,
+  onChangeNote,
+  onRespondAction,
 }: PendingUserInputPanelProps) {
   if (pendingUserInputs.length === 0) return null;
   const activePrompt = pendingUserInputs[0];
@@ -38,6 +44,8 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
       questionIndex={questionIndex}
       onToggleOption={onToggleOption}
       onAdvance={onAdvance}
+      onChangeNote={onChangeNote}
+      onRespondAction={onRespondAction}
     />
   );
 });
@@ -49,6 +57,8 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   questionIndex,
   onToggleOption,
   onAdvance,
+  onChangeNote,
+  onRespondAction,
 }: {
   prompt: PendingUserInput;
   isResponding: boolean;
@@ -56,6 +66,8 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   questionIndex: number;
   onToggleOption: (questionId: string, optionLabel: string) => void;
   onAdvance: () => void;
+  onChangeNote: (questionId: string, note: string) => void;
+  onRespondAction: (action: "chat" | "cancel") => void;
 }) {
   const progress = derivePendingUserInputProgress(prompt.questions, answers, questionIndex);
   const activeQuestion = progress.activeQuestion;
@@ -155,12 +167,19 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   return (
     <div className="px-4 py-3 sm:px-5">
       <div className="mb-2 flex items-center gap-3">
-        <span className="text-secondary-label text-[11px] font-semibold tracking-widest uppercase">
-          {activeQuestion.header}
-        </span>
+        {activeQuestion.header ? (
+          <span className="text-secondary-label text-[11px] font-semibold tracking-widest uppercase">
+            {activeQuestion.header}
+          </span>
+        ) : null}
         {prompt.questions.length > 1 ? (
           <span className="flex h-5 items-center rounded-md bg-muted/60 px-1.5 text-secondary-label text-[10px] font-medium tabular-nums">
             {questionIndex + 1}/{prompt.questions.length}
+          </span>
+        ) : null}
+        {prompt.timeout !== undefined ? (
+          <span className="ml-auto text-[10px] text-secondary-label">
+            {Math.max(1, Math.ceil(prompt.timeout / 1000))}s timeout
           </span>
         ) : null}
       </div>
@@ -187,10 +206,22 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
           );
           const content = (
             <>
-              <div className="min-w-0 flex-1 flex flex-col gap-0.5">
-                <span className="text-sm font-medium">{option.label}</span>
+              <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span className="flex items-center gap-2 text-sm font-medium">
+                  {option.label}
+                  {activeQuestion.recommended === index ? (
+                    <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+                      Recommended
+                    </span>
+                  ) : null}
+                </span>
                 {option.description && option.description !== option.label ? (
                   <span className="text-secondary-label text-xs">{option.description}</span>
+                ) : null}
+                {option.preview ? (
+                  <code className="mt-1 whitespace-pre-wrap rounded-md bg-background/70 px-2 py-1.5 text-[11px] text-secondary-label">
+                    {option.preview}
+                  </code>
                 ) : null}
               </div>
               {isSelected ? (
@@ -222,6 +253,39 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
           );
         })}
       </div>
+      {prompt.supportsNote ? (
+        <Textarea
+          value={progress.activeDraft?.note ?? ""}
+          onChange={(event) => onChangeNote(activeQuestion.id, event.target.value)}
+          placeholder="Optional note"
+          disabled={isResponding}
+          className="mt-3 min-h-16 resize-none text-sm"
+        />
+      ) : null}
+      {prompt.allowedActions?.some((action) => action === "chat" || action === "cancel") ? (
+        <div className="mt-3 flex flex-wrap justify-end gap-2">
+          {prompt.allowedActions.includes("cancel") ? (
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={isResponding}
+              onClick={() => onRespondAction("cancel")}
+            >
+              Cancel
+            </Button>
+          ) : null}
+          {prompt.allowedActions.includes("chat") ? (
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={isResponding}
+              onClick={() => onRespondAction("chat")}
+            >
+              Answer in chat
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 });

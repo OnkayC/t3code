@@ -38,6 +38,7 @@ describe("mobile composer drafts", () => {
             },
             runtimeMode: "approval-required",
             interactionMode: "plan",
+            workflow: "parallel",
             workspaceSelection: {
               mode: "worktree",
               branch: "main",
@@ -57,11 +58,33 @@ describe("mobile composer drafts", () => {
         },
         runtimeMode: "approval-required",
         interactionMode: "plan",
+        workflow: "parallel",
         workspaceSelection: {
           mode: "worktree",
           branch: "main",
           worktreePath: null,
         },
+      },
+    });
+  });
+
+  it("keeps a persisted workflow selection without message content", () => {
+    expect(
+      decodePersistedComposerDrafts({
+        schemaVersion: 1,
+        drafts: {
+          "environment-1:thread-1": {
+            text: "",
+            attachments: [],
+            workflow: "iterative",
+          },
+        },
+      }),
+    ).toEqual({
+      "environment-1:thread-1": {
+        text: "",
+        attachments: [],
+        workflow: "iterative",
       },
     });
   });
@@ -91,7 +114,7 @@ describe("mobile composer drafts", () => {
     ).toThrow();
   });
 
-  it("clears sent content without clearing the selected model or workspace", () => {
+  it("clears sent content without clearing selector settings", () => {
     const draftKey = "environment-1:thread-1";
     const draft: ComposerDraft = {
       text: "send this",
@@ -102,6 +125,8 @@ describe("mobile composer drafts", () => {
         model: "gpt-5.4",
         options: [{ id: "reasoningEffort", value: "xhigh" }],
       },
+      interactionMode: "plan",
+      workflow: "iterative",
       workspaceSelection: {
         mode: "worktree",
         branch: "main",
@@ -112,6 +137,8 @@ describe("mobile composer drafts", () => {
     expect(clearComposerDraftContentState({ [draftKey]: draft }, draftKey)).toEqual({
       [draftKey]: {
         modelSelection: draft.modelSelection,
+        interactionMode: draft.interactionMode,
+        workflow: draft.workflow,
         workspaceSelection: draft.workspaceSelection,
         text: "",
         attachments: [],

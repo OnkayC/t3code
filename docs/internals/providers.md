@@ -7,7 +7,7 @@ orchestration layer does not know which one is behind a thread.
 
 ## Built-in drivers
 
-[`builtInDrivers.ts`][drivers] exports `BUILT_IN_DRIVERS` with five entries:
+[`builtInDrivers.ts`][drivers] exports `BUILT_IN_DRIVERS` with six entries:
 
 | Driver kind   | Driver source                           |
 | ------------- | --------------------------------------- |
@@ -15,6 +15,7 @@ orchestration layer does not know which one is behind a thread.
 | `claudeAgent` | [`Drivers/ClaudeDriver.ts`][claude]     |
 | `cursor`      | [`Drivers/CursorDriver.ts`][cursor]     |
 | `grok`        | [`Drivers/GrokDriver.ts`][grok]         |
+| `omp`         | [`Drivers/OmpDriver.ts`][omp]           |
 | `opencode`    | [`Drivers/OpenCodeDriver.ts`][opencode] |
 
 Each driver declares its `driverKind`, a `configSchema`, and a `create` function that builds an
@@ -22,6 +23,26 @@ adapter in a child scope. Adapter implementations live beside them in
 `apps/server/src/provider/Layers/` (`CodexAdapter.ts`, `ClaudeAdapter.ts`, and so on) and conform to
 [`ProviderAdapter.ts`][adapter]. Read the driver plus its adapter to see how a specific agent's
 transport, config, and event shapes are mapped.
+
+### Native OMP RPC driver
+
+The `omp` driver launches one long-lived server-side OMP process per active thread in native
+`rpc-ui` mode. [`OmpRpcRuntime`][omp-runtime] owns JSONL framing, protocol-v2 chunking, semantic
+capability negotiation, request correlation, bounded stderr, and process cleanup. [`OmpAdapter`][omp-adapter]
+maps OMP approvals, rich asks, plan review, queued follow-ups, host-turn history, and rollback into
+provider-neutral runtime events. Browser, desktop, and mobile clients never connect to OMP directly
+and never receive its credentials or session-file paths.
+
+Two transient process shapes share the configured binary and profile but not the interactive
+session lifecycle. Provider discovery and periodic health checks launch scoped `rpc-ui --no-session`
+probes. When an OMP instance is selected for generated content, each title, branch name, commit
+message, or pull request description launches a separate `rpc` process that exits after that request.
+Resource and cleanup reasoning must account for these probes and per-request generators separately
+from the per-thread interactive process.
+
+Compatibility is capability-based rather than version-based. The driver requires the complete
+revision-1 profile declared in [`OmpRpcProtocol.ts`][omp-protocol]; an older OMP binary is reported as
+installed but incompatible. There is no ACP or lossy prompt-string fallback.
 
 ## Registry and routing
 
@@ -80,6 +101,10 @@ when a request opens (approval) or user input is requested, via
 [claude]: ../../apps/server/src/provider/Drivers/ClaudeDriver.ts
 [cursor]: ../../apps/server/src/provider/Drivers/CursorDriver.ts
 [grok]: ../../apps/server/src/provider/Drivers/GrokDriver.ts
+[omp]: ../../apps/server/src/provider/Drivers/OmpDriver.ts
+[omp-runtime]: ../../apps/server/src/provider/omp/OmpRpcRuntime.ts
+[omp-adapter]: ../../apps/server/src/provider/Layers/OmpAdapter.ts
+[omp-protocol]: ../../apps/server/src/provider/omp/OmpRpcProtocol.ts
 [opencode]: ../../apps/server/src/provider/Drivers/OpenCodeDriver.ts
 [adapter]: ../../apps/server/src/provider/Services/ProviderAdapter.ts
 [instances]: ../../apps/server/src/provider/Services/ProviderInstanceRegistry.ts

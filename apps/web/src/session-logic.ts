@@ -8,9 +8,14 @@ import {
   type OrchestrationThreadActivity,
   type OrchestrationProposedPlanId,
   ProviderDriverKind,
+  type ProviderApprovalDecision,
   type ToolLifecycleItemType,
+  type ProviderUserInputAction,
+  type PlanReviewRequestedPayload,
   type UserInputQuestion,
   type ThreadId,
+  type ProviderPlanExecutionModel,
+  type ProviderPlanReviewContextStrategy,
   type TurnId,
 } from "@t3tools/contracts";
 
@@ -40,6 +45,7 @@ export const PROVIDER_OPTIONS: Array<{
     available: true,
     pickerSidebarBadge: "new",
   },
+  { value: ProviderDriverKind.make("omp"), label: "OMP", available: true },
   {
     value: ProviderDriverKind.make("cursor"),
     label: "Cursor",
@@ -104,18 +110,34 @@ interface DerivedWorkLogEntry extends WorkLogEntry {
   /** Shell/monitor/plan tasks: ordinary work-log rows, never spawn CTAs. */
   isBackgroundTask?: boolean;
 }
-
 export interface PendingApproval {
   requestId: ApprovalRequestId;
-  requestKind: "command" | "file-read" | "file-change";
+  requestKind: "command" | "file-read" | "file-change" | "tool";
   createdAt: string;
   detail?: string;
+  toolName?: string;
+  approvalMode?: string;
+  tier?: string;
+  args?: unknown;
+  reason?: string;
+  details?: ReadonlyArray<string>;
+  providerSafetyChecks?: ReadonlyArray<string>;
+  allowedDecisions?: ReadonlyArray<ProviderApprovalDecision>;
 }
 
 export interface PendingUserInput {
   requestId: ApprovalRequestId;
   createdAt: string;
   questions: ReadonlyArray<UserInputQuestion>;
+  allowedActions?: ReadonlyArray<ProviderUserInputAction>;
+  timeout?: number;
+  supportsNote?: boolean;
+}
+
+export interface PendingPlanReview extends PlanReviewRequestedPayload {
+  requestId: ApprovalRequestId;
+  createdAt: string;
+  turnId: TurnId | null;
 }
 
 export interface ActivePlanState {
@@ -362,6 +384,8 @@ function requestKindFromRequestType(requestType: unknown): PendingApproval["requ
     case "file_change_approval":
     case "apply_patch_approval":
       return "file-change";
+    case "tool_approval":
+      return "tool";
     default:
       return null;
   }
@@ -410,11 +434,44 @@ export function derivePendingApprovals(
     const detail = payload && typeof payload.detail === "string" ? payload.detail : undefined;
 
     if (activity.kind === "approval.requested" && requestId && requestKind) {
+      const allowedDecisions: ProviderApprovalDecision[] | undefined = Array.isArray(
+        payload?.allowedDecisions,
+      )
+        ? payload.allowedDecisions.filter(
+            (decision): decision is ProviderApprovalDecision =>
+              decision === "accept" ||
+              decision === "acceptForSession" ||
+              decision === "decline" ||
+              decision === "cancel",
+          )
+        : undefined;
       openByRequestId.set(requestId, {
         requestId,
         requestKind,
         createdAt: activity.createdAt,
         ...(detail ? { detail } : {}),
+        ...(typeof payload?.toolName === "string" ? { toolName: payload.toolName } : {}),
+        ...(typeof payload?.approvalMode === "string"
+          ? { approvalMode: payload.approvalMode }
+          : {}),
+        ...(typeof payload?.tier === "string" ? { tier: payload.tier } : {}),
+        ...(payload && "args" in payload ? { args: payload.args } : {}),
+        ...(typeof payload?.reason === "string" ? { reason: payload.reason } : {}),
+        ...(Array.isArray(payload?.details)
+          ? {
+              details: payload.details.filter(
+                (value): value is string => typeof value === "string",
+              ),
+            }
+          : {}),
+        ...(Array.isArray(payload?.providerSafetyChecks)
+          ? {
+              providerSafetyChecks: payload.providerSafetyChecks.filter(
+                (value): value is string => typeof value === "string",
+              ),
+            }
+          : {}),
+        ...(allowedDecisions ? { allowedDecisions } : {}),
       });
       continue;
     }
@@ -452,7 +509,6 @@ function parseUserInputQuestions(
       const question = entry as Record<string, unknown>;
       if (
         typeof question.id !== "string" ||
-        typeof question.header !== "string" ||
         typeof question.question !== "string" ||
         !Array.isArray(question.options)
       ) {
@@ -462,27 +518,31 @@ function parseUserInputQuestions(
         .map<UserInputQuestion["options"][number] | null>((option) => {
           if (!option || typeof option !== "object") return null;
           const optionRecord = option as Record<string, unknown>;
-          if (
-            typeof optionRecord.label !== "string" ||
-            typeof optionRecord.description !== "string"
-          ) {
-            return null;
-          }
+          if (typeof optionRecord.label !== "string") return null;
           return {
             label: optionRecord.label,
-            description: optionRecord.description,
+            ...(typeof optionRecord.description === "string"
+              ? { description: optionRecord.description }
+              : {}),
+            ...(typeof optionRecord.preview === "string" ? { preview: optionRecord.preview } : {}),
           };
         })
         .filter((option): option is UserInputQuestion["options"][number] => option !== null);
-      if (options.length === 0) {
+      if (options.length === 0 && question.allowCustom === false) {
         return null;
       }
       return {
         id: question.id,
-        header: question.header,
+        ...(typeof question.header === "string" ? { header: question.header } : {}),
         question: question.question,
         options,
         multiSelect: question.multiSelect === true,
+        ...(typeof question.recommended === "number" &&
+        Number.isInteger(question.recommended) &&
+        question.recommended >= 0
+          ? { recommended: question.recommended }
+          : {}),
+        ...(typeof question.allowCustom === "boolean" ? { allowCustom: question.allowCustom } : {}),
       };
     })
     .filter((question): question is UserInputQuestion => question !== null);
@@ -511,10 +571,23 @@ export function derivePendingUserInputs(
       if (!questions) {
         continue;
       }
+      const allowedActions = Array.isArray(payload?.allowedActions)
+        ? payload.allowedActions.filter(
+            (action): action is ProviderUserInputAction =>
+              action === "submit" || action === "chat" || action === "cancel",
+          )
+        : undefined;
+      const supportsNote =
+        ("provider" in activity && (activity as { provider?: string }).provider === "omp") ||
+        payload?.supportsNote === true ||
+        payload?.provider === "omp";
       openByRequestId.set(requestId, {
         requestId,
         createdAt: activity.createdAt,
         questions,
+        ...(allowedActions ? { allowedActions } : {}),
+        ...(typeof payload?.timeout === "number" ? { timeout: payload.timeout } : {}),
+        ...(supportsNote ? { supportsNote: true } : {}),
       });
       continue;
     }
@@ -536,6 +609,75 @@ export function derivePendingUserInputs(
   return [...openByRequestId.values()].toSorted((left, right) =>
     left.createdAt.localeCompare(right.createdAt),
   );
+}
+
+function parsePlanExecutionModel(value: unknown): ProviderPlanExecutionModel | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.provider !== "string" || typeof record.modelId !== "string") return null;
+  return {
+    provider: record.provider,
+    modelId: record.modelId,
+    ...(typeof record.thinkingLevel === "string" ? { thinkingLevel: record.thinkingLevel } : {}),
+  };
+}
+
+export function derivePendingPlanReview(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): PendingPlanReview | null {
+  let pending: PendingPlanReview | null = null;
+  for (const activity of [...activities].toSorted(compareActivitiesByOrder)) {
+    const payload =
+      activity.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : null;
+    if (!payload || typeof payload.requestId !== "string") continue;
+    const requestId = ApprovalRequestId.make(payload.requestId);
+    if (activity.kind === "plan.review.resolved") {
+      if (pending?.requestId === requestId) pending = null;
+      continue;
+    }
+    if (activity.kind !== "plan.review.requested") continue;
+    if (
+      typeof payload.title !== "string" ||
+      typeof payload.planArtifactId !== "string" ||
+      typeof payload.planArtifactUrl !== "string" ||
+      typeof payload.planMarkdown !== "string" ||
+      !Array.isArray(payload.allowedContextStrategies) ||
+      !Array.isArray(payload.executionModels)
+    ) {
+      continue;
+    }
+    const allowedContextStrategies = payload.allowedContextStrategies.filter(
+      (value): value is ProviderPlanReviewContextStrategy =>
+        value === "fresh" || value === "preserve" || value === "compact",
+    );
+    const executionModels = payload.executionModels
+      .map(parsePlanExecutionModel)
+      .filter((model): model is ProviderPlanExecutionModel => model !== null);
+    const defaultExecutionModel = parsePlanExecutionModel(payload.defaultExecutionModel);
+    pending = {
+      requestId,
+      turnId: activity.turnId,
+      createdAt: activity.createdAt,
+      title: payload.title,
+      planArtifactId: payload.planArtifactId,
+      planArtifactUrl: payload.planArtifactUrl,
+      planMarkdown: payload.planMarkdown,
+      allowedContextStrategies,
+      executionModels,
+      ...(defaultExecutionModel ? { defaultExecutionModel } : {}),
+      ...(payload.contextUsage !== undefined ? { contextUsage: payload.contextUsage } : {}),
+    };
+  }
+  return pending;
+}
+
+export function planReviewMatchesProposedPlan(
+  planReview: Pick<PendingPlanReview, "turnId">,
+  proposedPlan: Pick<ProposedPlan, "turnId">,
+): boolean {
+  return planReview.turnId !== null && proposedPlan.turnId === planReview.turnId;
 }
 
 function planStateFromActivity(activity: OrchestrationThreadActivity): ActivePlanState | null {

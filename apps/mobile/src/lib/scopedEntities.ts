@@ -10,7 +10,8 @@ export function scopedThreadKey(environmentId: EnvironmentId, threadId: ThreadId
 
 export function scopedRequestKey(
   environmentId: EnvironmentId,
-  requestId: ApprovalRequestId,
+  threadId: ThreadId,
+  requestId: ApprovalRequestId | string,
 ): string {
-  return `${environmentId}:${requestId}`;
+  return `${environmentId}:${threadId}:${requestId}`;
 }

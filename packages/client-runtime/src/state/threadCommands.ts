@@ -4,10 +4,12 @@ import { Atom } from "effect/unstable/reactivity";
 import { createAtomCommandScheduler, createEnvironmentCommand } from "./runtime.ts";
 import {
   type ArchiveThreadInput,
+  type CancelQueuedThreadTurnInput,
   type CreateThreadInput,
   type DeleteThreadInput,
   type InterruptThreadTurnInput,
   type RespondToThreadApprovalInput,
+  type RespondToThreadPlanReviewInput,
   type RespondToThreadUserInputInput,
   type RevertThreadCheckpointInput,
   type SetThreadInteractionModeInput,
@@ -24,10 +26,12 @@ import {
   type UnsnoozeThreadInput,
   type UpdateThreadMetadataInput,
   archiveThread,
+  cancelQueuedThreadTurn,
   createThread,
   deleteThread,
   interruptThreadTurn,
   respondToThreadApproval,
+  respondToThreadPlanReview,
   respondToThreadUserInput,
   revertThreadCheckpoint,
   setThreadInteractionMode,
@@ -48,10 +52,12 @@ import type { EnvironmentRegistry } from "../connection/registry.ts";
 
 export type {
   ArchiveThreadInput,
+  CancelQueuedThreadTurnInput,
   CreateThreadInput,
   DeleteThreadInput,
   InterruptThreadTurnInput,
   RespondToThreadApprovalInput,
+  RespondToThreadPlanReviewInput,
   RespondToThreadUserInputInput,
   RevertThreadCheckpointInput,
   SetThreadInteractionModeInput,
@@ -175,6 +181,12 @@ export function createThreadEnvironmentAtoms<R, E>(
       scheduler,
       concurrency,
     }),
+    cancelQueuedTurn: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:cancel-queued-turn",
+      execute: (input: CancelQueuedThreadTurnInput) => cancelQueuedThreadTurn(input),
+      scheduler,
+      concurrency,
+    }),
     respondToApproval: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:respond-to-approval",
       execute: (input: RespondToThreadApprovalInput) => respondToThreadApproval(input),
@@ -184,6 +196,12 @@ export function createThreadEnvironmentAtoms<R, E>(
     respondToUserInput: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:respond-to-user-input",
       execute: (input: RespondToThreadUserInputInput) => respondToThreadUserInput(input),
+      scheduler,
+      concurrency,
+    }),
+    respondToPlanReview: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:respond-to-plan-review",
+      execute: (input: RespondToThreadPlanReviewInput) => respondToThreadPlanReview(input),
       scheduler,
       concurrency,
     }),

@@ -9,6 +9,7 @@ import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   type MessageId,
+  type ProviderTurnDeliveryMode,
 } from "@t3tools/contracts";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
 import * as Cause from "effect/Cause";
@@ -20,7 +21,7 @@ import { buildProjectThreadStartTurnInput } from "../lib/projectThreadStartTurn"
 import { toUploadChatImageAttachments } from "../lib/composerImages";
 import { randomHex } from "../lib/uuid";
 import { appAtomRegistry } from "./atom-registry";
-import { useProjects, useThreadShells } from "./entities";
+import { useProjects, useServerConfigs, useThreadShells } from "./entities";
 import {
   confirmThreadOutboxMessageQueued,
   ensureThreadOutboxLoaded,
@@ -29,7 +30,7 @@ import {
 import {
   isQueuedThreadCreationSendable,
   modelSelectionsEqual,
-  resolveThreadOutboxDeliveryAction,
+  resolveThreadOutboxDeliveryDecision,
   resolveThreadOutboxFailureAction,
   resolveQueuedThreadSettings,
   threadOutboxRetryDelayMs,
@@ -102,6 +103,7 @@ export function useThreadOutboxDrain(): void {
   const shellStatuses = useThreadOutboxShellStatuses();
   const threads = useThreadShells();
   const projects = useProjects();
+  const serverConfigs = useServerConfigs();
   const { connectedEnvironments } = useRemoteConnectionStatus();
   const [retryTick, setRetryTick] = useState(0);
   const retryAttemptRef = useRef(new Map<MessageId, number>());
@@ -166,7 +168,11 @@ export function useThreadOutboxDrain(): void {
   }, []);
 
   const sendQueuedMessage = useCallback(
-    async (queuedMessage: QueuedThreadMessage, thread: EnvironmentThreadShell) => {
+    async (
+      queuedMessage: QueuedThreadMessage,
+      thread: EnvironmentThreadShell,
+      deliveryMode: ProviderTurnDeliveryMode | undefined,
+    ) => {
       const settings = resolveQueuedThreadSettings(queuedMessage, thread);
       const { reportFailure, completeDelivery } = makeDeliveryHelpers(queuedMessage);
 
@@ -201,13 +207,14 @@ export function useThreadOutboxDrain(): void {
         }
       }
 
-      if (settings.interactionMode !== thread.interactionMode) {
+      if (settings.interactionMode !== thread.interactionMode || settings.workflow !== undefined) {
         const interactionResult = await setThreadInteractionMode({
           environmentId: queuedMessage.environmentId,
           input: {
             commandId: settingsCommandId(queuedMessage, "interaction-mode"),
             threadId: queuedMessage.threadId,
             interactionMode: settings.interactionMode,
+            ...(settings.workflow !== undefined ? { workflow: settings.workflow } : {}),
             createdAt: queuedMessage.createdAt,
           },
         });
@@ -231,6 +238,8 @@ export function useThreadOutboxDrain(): void {
           modelSelection: settings.modelSelection,
           runtimeMode: settings.runtimeMode,
           interactionMode: settings.interactionMode,
+          ...(settings.workflow !== undefined ? { workflow: settings.workflow } : {}),
+          ...(deliveryMode !== undefined ? { deliveryMode } : {}),
           createdAt: queuedMessage.createdAt,
         },
       });
@@ -270,7 +279,8 @@ export function useThreadOutboxDrain(): void {
           modelSelection,
           runtimeMode: queuedMessage.runtimeMode ?? DEFAULT_RUNTIME_MODE,
           interactionMode: queuedMessage.interactionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE,
-          workspaceMode: creation.workspaceMode,
+          ...(queuedMessage.workflow !== undefined ? { workflow: queuedMessage.workflow } : {}),
+          envMode: creation.workspaceMode,
           branch: creation.branch,
           worktreePath: creation.worktreePath,
           startFromOrigin: creation.startFromOrigin ?? false,
@@ -309,13 +319,33 @@ export function useThreadOutboxDrain(): void {
         (candidate) => candidate.environmentId === nextQueuedMessage.environmentId,
       );
       const shellStatus = shellStatuses.get(nextQueuedMessage.environmentId) ?? "empty";
-      const deliveryAction = resolveThreadOutboxDeliveryAction({
+      const threadBusy =
+        thread?.session?.status === "running" || thread?.session?.status === "starting";
+      const wouldReplaceActiveSession =
+        thread !== undefined &&
+        nextQueuedMessage.runtimeMode !== undefined &&
+        nextQueuedMessage.runtimeMode !== thread.runtimeMode;
+      const queuedProviderInstanceId = (nextQueuedMessage.modelSelection ?? thread?.modelSelection)
+        ?.instanceId;
+      const activeProviderInstanceId =
+        thread?.session?.providerInstanceId ?? thread?.modelSelection.instanceId;
+      const queuedProvider =
+        queuedProviderInstanceId !== undefined &&
+        queuedProviderInstanceId === activeProviderInstanceId
+          ? serverConfigs
+              .get(nextQueuedMessage.environmentId)
+              ?.providers.find((provider) => provider.instanceId === queuedProviderInstanceId)
+          : undefined;
+      const deliveryDecision = resolveThreadOutboxDeliveryDecision({
         isCreation: creation !== undefined,
         threadExists: thread !== undefined,
         shellStatus,
         environmentConnected: environment?.connectionState === "connected",
-        threadBusy: thread?.session?.status === "running" || thread?.session?.status === "starting",
+        threadBusy,
+        provider: queuedProvider,
+        wouldReplaceActiveSession,
       });
+      const deliveryAction = deliveryDecision.action;
       if (deliveryAction === "wait") {
         continue;
       }
@@ -361,11 +391,10 @@ export function useThreadOutboxDrain(): void {
           // Rolled back by a failed write; nothing to deliver or retry.
           return true;
         }
-        // The guards evaluated before the confirmation await are stale by now:
-        // the thread may have gone busy, or the user may have opened this
-        // message in the editor. Re-read both and defer to the next drain pass
-        // (returning true skips the failure/backoff path) rather than sending
-        // a payload the user is editing or racing an active turn.
+        // The guards evaluated before the confirmation await are stale by now.
+        // Re-read the edit lock and thread, then resolve queue capability again
+        // so a newly busy supported provider receives a native follow-up while
+        // unsupported providers continue waiting for idle.
         if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[nextQueuedMessage.messageId]) {
           return true;
         }
@@ -375,17 +404,49 @@ export function useThreadOutboxDrain(): void {
         );
         const freshThreadBusy =
           freshThread?.session?.status === "running" || freshThread?.session?.status === "starting";
-        if (deliveryAction === "send" && creation === undefined && freshThreadBusy) {
+        const freshWouldReplaceActiveSession =
+          freshThread !== undefined &&
+          nextQueuedMessage.runtimeMode !== undefined &&
+          nextQueuedMessage.runtimeMode !== freshThread.runtimeMode;
+        const freshQueuedProviderInstanceId = (
+          nextQueuedMessage.modelSelection ?? freshThread?.modelSelection
+        )?.instanceId;
+        const freshActiveProviderInstanceId =
+          freshThread?.session?.providerInstanceId ?? freshThread?.modelSelection.instanceId;
+        const freshProvider =
+          freshQueuedProviderInstanceId !== undefined &&
+          freshQueuedProviderInstanceId === freshActiveProviderInstanceId
+            ? serverConfigs
+                .get(nextQueuedMessage.environmentId)
+                ?.providers.find(
+                  (provider) => provider.instanceId === freshQueuedProviderInstanceId,
+                )
+            : undefined;
+        const freshDeliveryDecision = resolveThreadOutboxDeliveryDecision({
+          isCreation: creation !== undefined,
+          threadExists: freshThread !== undefined,
+          shellStatus,
+          environmentConnected: environment?.connectionState === "connected",
+          threadBusy: freshThreadBusy,
+          provider: freshProvider,
+          wouldReplaceActiveSession: freshWouldReplaceActiveSession,
+        });
+        const freshDeliveryAction = freshDeliveryDecision.action;
+        if (freshDeliveryAction === "wait") {
           return true;
         }
-        return deliveryAction === "remove"
+        return freshDeliveryAction === "remove"
           ? removeQueuedMessage("[thread-outbox] failed to remove message for a missing thread")
           : creation !== undefined
             ? creationProjectCwd !== null
               ? sendQueuedCreation(nextQueuedMessage, creation, creationProjectCwd)
               : removeQueuedMessage("[thread-outbox] dropped pending task for a missing project")
-            : thread !== undefined
-              ? sendQueuedMessage(nextQueuedMessage, thread)
+            : freshThread !== undefined
+              ? sendQueuedMessage(
+                  nextQueuedMessage,
+                  freshThread,
+                  freshDeliveryDecision.deliveryMode,
+                )
               : Promise.resolve(false);
       });
       void delivery
@@ -429,6 +490,7 @@ export function useThreadOutboxDrain(): void {
     retryTick,
     sendQueuedCreation,
     sendQueuedMessage,
+    serverConfigs,
     shellStatuses,
     threads,
   ]);

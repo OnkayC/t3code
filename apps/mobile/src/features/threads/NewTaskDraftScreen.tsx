@@ -7,7 +7,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useThemeColor } from "../../lib/useThemeColor";
 import { useFontFamily } from "../../lib/useFontFamily";
 
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, type ProviderPlanWorkflow } from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -52,6 +52,8 @@ import { branchBadgeLabel, useNewTaskFlow } from "./new-task-flow-provider";
 import { useCreateProjectThread } from "./use-project-actions";
 import { resolveDraftProjectSelection } from "./new-task-project-selection";
 import { useIncomingShare } from "../sharing/IncomingShareProvider";
+
+const EMPTY_PLAN_WORKFLOWS: ReadonlyArray<ProviderPlanWorkflow> = [];
 
 function formatWorkspaceLabel(input: {
   readonly workspaceMode: string;
@@ -556,6 +558,20 @@ export function NewTaskDraftScreen(props: {
       }),
     [flow.selectedModel?.options, flow.selectedModelOption?.capabilities],
   );
+  const selectedProviderStatus = useMemo(
+    () =>
+      selectedEnvironmentServerConfig?.providers.find(
+        (provider) => provider.instanceId === flow.selectedModel?.instanceId,
+      ) ?? null,
+    [selectedEnvironmentServerConfig, flow.selectedModel?.instanceId],
+  );
+  const supportedPlanWorkflows =
+    selectedProviderStatus?.supportedPlanWorkflows ?? EMPTY_PLAN_WORKFLOWS;
+  const currentPlanWorkflow =
+    flow.workflow ??
+    selectedProviderStatus?.defaultPlanWorkflow ??
+    supportedPlanWorkflows[0] ??
+    null;
 
   const optionsMenuActions = useMemo(
     () => [
@@ -601,8 +617,28 @@ export function NewTaskDraftScreen(props: {
           };
         }),
       },
+      ...(flow.interactionMode === "plan" && supportedPlanWorkflows.length > 0
+        ? [
+            {
+              id: "options-plan-workflow",
+              title: "Plan workflow",
+              subtitle: currentPlanWorkflow ?? undefined,
+              subactions: supportedPlanWorkflows.map((workflow) => ({
+                id: `options:workflow:${workflow}`,
+                title: workflow === "parallel" ? "Parallel" : "Iterative",
+                state: currentPlanWorkflow === workflow ? ("on" as const) : undefined,
+              })),
+            },
+          ]
+        : []),
     ],
-    [flow.interactionMode, flow.runtimeMode, providerOptionDescriptors],
+    [
+      currentPlanWorkflow,
+      flow.interactionMode,
+      flow.runtimeMode,
+      providerOptionDescriptors,
+      supportedPlanWorkflows,
+    ],
   );
 
   const workspaceMenuActions = useMemo(() => {
@@ -717,6 +753,11 @@ export function NewTaskDraftScreen(props: {
       );
       return;
     }
+    if (event.startsWith("options:workflow:")) {
+      const workflow = event.slice("options:workflow:".length) as ProviderPlanWorkflow;
+      flow.setInteractionMode("plan", workflow);
+      return;
+    }
     if (event.startsWith("options:interaction:")) {
       flow.setInteractionMode(
         event.slice("options:interaction:".length) as Parameters<typeof flow.setInteractionMode>[0],
@@ -796,6 +837,7 @@ export function NewTaskDraftScreen(props: {
     const startFromOrigin = draft.workspaceSelection?.startFromOrigin ?? flow.startFromOrigin;
     const runtimeMode = draft.runtimeMode ?? flow.runtimeMode;
     const interactionMode = draft.interactionMode ?? flow.interactionMode;
+    const workflow = draft.workflow ?? flow.workflow;
     const initialMessageText = draft.text.trim();
 
     if (
@@ -867,6 +909,7 @@ export function NewTaskDraftScreen(props: {
       startFromOrigin,
       runtimeMode,
       interactionMode,
+      ...(workflow !== null ? { workflow } : {}),
       initialMessageText,
       initialAttachments: draft.attachments,
       ...(editingPendingTask

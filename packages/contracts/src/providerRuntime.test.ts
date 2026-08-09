@@ -127,7 +127,7 @@ describe("ProviderRuntimeEvent", () => {
     if (parsed.type !== "user-input.resolved") {
       throw new Error("expected user-input.resolved");
     }
-    expect(parsed.payload.answers.sandbox_mode).toBe("workspace-write");
+    expect(parsed.payload.answers?.sandbox_mode).toBe("workspace-write");
   });
 
   it("rejects legacy message.delta type", () => {
@@ -180,6 +180,187 @@ describe("ProviderRuntimeEvent", () => {
     }
     expect(parsed.payload.usage.maxTokens).toBe(200000);
     expect(parsed.payload.usage.usedTokens).toBe(31251);
+  });
+  it("decodes structured approvals and authoritative terminal outcomes", () => {
+    const opened = decodeRuntimeEvent({
+      type: "request.opened",
+      eventId: "event-approval-opened",
+      provider: "omp",
+      providerInstanceId: "omp",
+      createdAt: "2026-02-28T00:00:05.000Z",
+      threadId: "thread-1",
+      requestId: "approval-1",
+      raw: { source: "omp.rpc", method: "approval_request", payload: {} },
+      payload: {
+        requestType: "tool_approval",
+        toolName: "bash",
+        approvalMode: "always-ask",
+        tier: "exec",
+        args: { command: "git status" },
+        reason: "Runs a workspace command",
+        details: ["Command executes in the thread workspace"],
+        providerSafetyChecks: ["network access"],
+        allowedDecisions: ["accept", "decline", "cancel"],
+      },
+    });
+    const resolved = decodeRuntimeEvent({
+      type: "request.resolved",
+      eventId: "event-approval-resolved",
+      provider: "omp",
+      createdAt: "2026-02-28T00:00:06.000Z",
+      threadId: "thread-1",
+      requestId: "approval-1",
+      payload: {
+        requestType: "tool_approval",
+        outcome: "accepted",
+        decision: "accept",
+      },
+    });
+
+    expect(opened.type).toBe("request.opened");
+    if (opened.type !== "request.opened") throw new Error("expected request.opened");
+    expect(opened.payload.allowedDecisions).toEqual(["accept", "decline", "cancel"]);
+    expect(opened.raw?.source).toBe("omp.rpc");
+    expect(resolved.type).toBe("request.resolved");
+    if (resolved.type !== "request.resolved") throw new Error("expected request.resolved");
+    expect(resolved.payload.outcome).toBe("accepted");
+  });
+
+  it("decodes rich user input and non-submit terminal outcomes", () => {
+    const requested = decodeRuntimeEvent({
+      type: "user-input.requested",
+      eventId: "event-rich-ask",
+      provider: "omp",
+      createdAt: "2026-02-28T00:00:07.000Z",
+      threadId: "thread-1",
+      requestId: "ask-1",
+      payload: {
+        questions: [
+          {
+            id: "targets",
+            question: "Where should this deploy?",
+            options: [
+              { label: "Web", preview: "https://preview.example.test" },
+              { label: "Mobile", description: "Native clients" },
+            ],
+            multiSelect: true,
+            recommended: 0,
+            allowCustom: true,
+          },
+        ],
+        allowedActions: ["submit", "chat", "cancel"],
+        timeout: 30000,
+      },
+    });
+    const resolved = decodeRuntimeEvent({
+      type: "user-input.resolved",
+      eventId: "event-rich-ask-resolved",
+      provider: "omp",
+      createdAt: "2026-02-28T00:00:08.000Z",
+      threadId: "thread-1",
+      requestId: "ask-1",
+      payload: { outcome: "chat" },
+    });
+
+    expect(requested.type).toBe("user-input.requested");
+    if (requested.type !== "user-input.requested") {
+      throw new Error("expected user-input.requested");
+    }
+    expect(requested.payload.questions[0]?.header).toBeUndefined();
+    expect(requested.payload.questions[0]?.options[0]?.preview).toContain("preview");
+    expect(requested.payload.allowedActions).toEqual(["submit", "chat", "cancel"]);
+    expect(resolved.type).toBe("user-input.resolved");
+    if (resolved.type !== "user-input.resolved") throw new Error("expected resolved ask");
+    expect(resolved.payload.outcome).toBe("chat");
+  });
+
+  it("decodes a rotated native resume cursor on session configuration", () => {
+    const configured = decodeRuntimeEvent({
+      type: "session.configured",
+      eventId: "event-session-configured",
+      provider: "omp",
+      createdAt: "2026-02-28T00:00:08.500Z",
+      threadId: "thread-1",
+      payload: {
+        config: {},
+        resumeCursor: {
+          schemaVersion: 1,
+          sessionKey: "sessions/omp-session.jsonl",
+          sessionId: "omp-session",
+        },
+      },
+    });
+
+    expect(configured.type).toBe("session.configured");
+    if (configured.type !== "session.configured") throw new Error("expected configuration");
+    expect(configured.payload.resumeCursor).toEqual({
+      schemaVersion: 1,
+      sessionKey: "sessions/omp-session.jsonl",
+      sessionId: "omp-session",
+    });
+  });
+
+  it("decodes queued turns and same-thread plan review lifecycle", () => {
+    const queued = decodeRuntimeEvent({
+      type: "turn.queued",
+      eventId: "event-turn-queued",
+      provider: "omp",
+      createdAt: "2026-02-28T00:00:09.000Z",
+      threadId: "thread-1",
+      turnId: "turn-follow-up",
+      payload: {
+        deliveryMode: "follow-up",
+        optionFingerprint: "sha256:abc",
+        queuePosition: 2,
+      },
+    });
+    const requested = decodeRuntimeEvent({
+      type: "plan.review.requested",
+      eventId: "event-plan-review",
+      provider: "omp",
+      createdAt: "2026-02-28T00:00:10.000Z",
+      threadId: "thread-1",
+      requestId: "plan-review-1",
+      payload: {
+        title: "Implementation plan",
+        planArtifactId: "plan-abc",
+        planArtifactUrl: "local://plans/plan-abc",
+        planMarkdown: "# Plan\n\nShip it.",
+        allowedContextStrategies: ["fresh", "preserve", "compact"],
+        contextUsage: { usedTokens: 1000, maxTokens: 10000 },
+        executionModels: [{ provider: "anthropic", modelId: "claude-sonnet" }],
+        defaultExecutionModel: { provider: "anthropic", modelId: "claude-sonnet" },
+      },
+    });
+    const resolved = decodeRuntimeEvent({
+      type: "plan.review.resolved",
+      eventId: "event-plan-review-resolved",
+      provider: "omp",
+      createdAt: "2026-02-28T00:00:11.000Z",
+      threadId: "thread-1",
+      requestId: "plan-review-1",
+      turnId: "turn-plan-execute",
+      payload: {
+        outcome: "executing",
+        clientTurnId: "turn-plan-execute",
+        planDigest: "sha256:def",
+        decision: {
+          action: "execute",
+          context: "compact",
+          clientTurnId: "turn-plan-execute",
+        },
+      },
+    });
+
+    expect(queued.type).toBe("turn.queued");
+    if (queued.type !== "turn.queued") throw new Error("expected turn.queued");
+    expect(queued.payload.queuePosition).toBe(2);
+    expect(requested.type).toBe("plan.review.requested");
+    if (requested.type !== "plan.review.requested") throw new Error("expected plan review");
+    expect(requested.payload.allowedContextStrategies).toContain("compact");
+    expect(resolved.type).toBe("plan.review.resolved");
+    if (resolved.type !== "plan.review.resolved") throw new Error("expected plan resolution");
+    expect(resolved.payload.outcome).toBe("executing");
   });
 });
 

@@ -1,6 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
+import * as SchemaParser from "effect/SchemaParser";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import * as Struct from "effect/Struct";
 import { ProviderOptionSelections } from "./model.ts";
@@ -124,9 +125,13 @@ export const RuntimeMode = Schema.Literals([
 ]);
 export type RuntimeMode = typeof RuntimeMode.Type;
 export const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
-export const ProviderInteractionMode = Schema.Literals(["default", "plan"]);
+export const ProviderInteractionMode = Schema.Literals(["default", "plan", "plan-paused"]);
 export type ProviderInteractionMode = typeof ProviderInteractionMode.Type;
 export const DEFAULT_PROVIDER_INTERACTION_MODE: ProviderInteractionMode = "default";
+export const ProviderPlanWorkflow = Schema.Literals(["parallel", "iterative"]);
+export type ProviderPlanWorkflow = typeof ProviderPlanWorkflow.Type;
+export const ProviderTurnDeliveryMode = Schema.Literals(["steer", "follow-up"]);
+export type ProviderTurnDeliveryMode = typeof ProviderTurnDeliveryMode.Type;
 export const ProviderRequestKind = Schema.Literals(["command", "file-read", "file-change"]);
 export type ProviderRequestKind = typeof ProviderRequestKind.Type;
 export const AssistantDeliveryMode = Schema.Literals(["buffered", "streaming"]);
@@ -138,8 +143,107 @@ export const ProviderApprovalDecision = Schema.Literals([
   "cancel",
 ]);
 export type ProviderApprovalDecision = typeof ProviderApprovalDecision.Type;
-export const ProviderUserInputAnswers = Schema.Record(Schema.String, Schema.Unknown);
-export type ProviderUserInputAnswers = typeof ProviderUserInputAnswers.Type;
+
+export const ProviderUserInputAnswer = Schema.Struct({
+  selectedOptions: Schema.Array(Schema.String),
+  customInput: Schema.optional(Schema.String),
+  note: Schema.optional(Schema.String),
+});
+export type ProviderUserInputAnswer = typeof ProviderUserInputAnswer.Type;
+
+export const ProviderUserInputResponse = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("submit"),
+    answers: Schema.Record(Schema.String, ProviderUserInputAnswer),
+  }),
+  Schema.Struct({ kind: Schema.Literal("chat") }),
+  Schema.Struct({ kind: Schema.Literal("cancel") }),
+]);
+export type ProviderUserInputResponse = typeof ProviderUserInputResponse.Type;
+
+export const ProviderPlanReviewContextStrategy = Schema.Literals(["fresh", "preserve", "compact"]);
+export type ProviderPlanReviewContextStrategy = typeof ProviderPlanReviewContextStrategy.Type;
+
+export const ProviderPlanExecutionModel = Schema.Struct({
+  provider: TrimmedNonEmptyString,
+  modelId: TrimmedNonEmptyString,
+  thinkingLevel: Schema.optional(TrimmedNonEmptyString),
+});
+export type ProviderPlanExecutionModel = typeof ProviderPlanExecutionModel.Type;
+
+export const ProviderPlanReviewDecision = Schema.Union([
+  Schema.Struct({
+    action: Schema.Literal("execute"),
+    context: ProviderPlanReviewContextStrategy,
+    executionModel: Schema.optional(ProviderPlanExecutionModel),
+    replacementPlanMarkdown: Schema.optional(Schema.String),
+    clientTurnId: TurnId,
+  }),
+  Schema.Struct({
+    action: Schema.Literal("refine"),
+    feedback: TrimmedNonEmptyString,
+    replacementPlanMarkdown: Schema.optional(Schema.String),
+    clientTurnId: TurnId,
+  }),
+  Schema.Struct({ action: Schema.Literal("cancel") }),
+]);
+export type ProviderPlanReviewDecision = typeof ProviderPlanReviewDecision.Type;
+
+export const decodeProviderUserInputResponse =
+  SchemaParser.decodeUnknownEffect(ProviderUserInputResponse);
+
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeLegacyProviderUserInputAnswer(value: unknown): ProviderUserInputAnswer {
+  if (typeof value === "string") {
+    return { selectedOptions: [value] };
+  }
+  if (Array.isArray(value) && value.every((entry) => typeof entry === "string")) {
+    return { selectedOptions: value };
+  }
+  if (isUnknownRecord(value)) {
+    const selectedOptionsSource = Array.isArray(value.selectedOptions)
+      ? value.selectedOptions
+      : Array.isArray(value.answers)
+        ? value.answers
+        : [];
+    const selectedOptions = selectedOptionsSource.filter(
+      (entry): entry is string => typeof entry === "string",
+    );
+    return {
+      selectedOptions,
+      ...(typeof value.customInput === "string" ? { customInput: value.customInput } : {}),
+      ...(typeof value.note === "string" ? { note: value.note } : {}),
+    };
+  }
+  return {
+    selectedOptions: [],
+    ...(value === undefined ? {} : { customInput: String(value) }),
+  };
+}
+
+export function normalizeProviderUserInputResponse(input: {
+  readonly response?: unknown;
+  readonly answers?: unknown;
+}): unknown {
+  if (input.response !== undefined) {
+    return input.response;
+  }
+  if (!isUnknownRecord(input.answers)) {
+    return input.answers;
+  }
+  return {
+    kind: "submit",
+    answers: Object.fromEntries(
+      Object.entries(input.answers).map(([questionId, answer]) => [
+        questionId,
+        normalizeLegacyProviderUserInputAnswer(answer),
+      ]),
+    ),
+  };
+}
 
 export const PROVIDER_SEND_TURN_MAX_INPUT_CHARS = 120_000;
 export const PROVIDER_SEND_TURN_MAX_ATTACHMENTS = 8;
@@ -350,7 +454,7 @@ export const ThreadTitleRegeneration = Schema.Struct({
 });
 export type ThreadTitleRegeneration = typeof ThreadTitleRegeneration.Type;
 
-export const OrchestrationThread = Schema.Struct({
+const OrchestrationThreadDomain = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
@@ -359,6 +463,7 @@ export const OrchestrationThread = Schema.Struct({
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
+  workflow: Schema.optional(ProviderPlanWorkflow),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
@@ -395,6 +500,31 @@ export const OrchestrationThread = Schema.Struct({
   checkpoints: Schema.Array(OrchestrationCheckpointSummary),
   session: Schema.NullOr(OrchestrationSession),
 });
+
+const OrchestrationThreadSource = Schema.Struct({
+  ...OrchestrationThreadDomain.fields,
+  planPaused: Schema.optional(Schema.Boolean),
+});
+
+export const OrchestrationThread = OrchestrationThreadSource.pipe(
+  Schema.decodeTo(
+    Schema.toType(OrchestrationThreadDomain),
+    SchemaTransformation.transformOrFail({
+      decode: ({ planPaused, ...value }) =>
+        Effect.succeed({
+          ...value,
+          interactionMode: planPaused === true ? ("plan-paused" as const) : value.interactionMode,
+        }),
+      encode: (value) =>
+        Effect.succeed({
+          ...value,
+          interactionMode:
+            value.interactionMode === "plan-paused" ? ("plan" as const) : value.interactionMode,
+          ...(value.interactionMode === "plan-paused" ? { planPaused: true } : {}),
+        }),
+    }),
+  ),
+);
 export type OrchestrationThread = typeof OrchestrationThread.Type;
 
 export const OrchestrationReadModel = Schema.Struct({
@@ -417,7 +547,7 @@ export const OrchestrationProjectShell = Schema.Struct({
 });
 export type OrchestrationProjectShell = typeof OrchestrationProjectShell.Type;
 
-export const OrchestrationThreadShell = Schema.Struct({
+const OrchestrationThreadShellDomain = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
@@ -426,6 +556,7 @@ export const OrchestrationThreadShell = Schema.Struct({
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
+  workflow: Schema.optional(ProviderPlanWorkflow),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
@@ -445,6 +576,11 @@ export const OrchestrationThreadShell = Schema.Struct({
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
   hasPendingApprovals: Schema.Boolean,
   hasPendingUserInput: Schema.Boolean,
+  /**
+   * True while a same-thread plan review awaits Execute/Refine/Cancel.
+   * Optional for older servers/clients; absent means false.
+   */
+  hasPendingPlanReview: Schema.optional(Schema.Boolean),
   hasActionableProposedPlan: Schema.Boolean,
   /**
    * Native background work alive after the turn settles: "working" while
@@ -467,6 +603,31 @@ export const OrchestrationThreadShell = Schema.Struct({
     ),
   ),
 });
+
+const OrchestrationThreadShellSource = Schema.Struct({
+  ...OrchestrationThreadShellDomain.fields,
+  planPaused: Schema.optional(Schema.Boolean),
+});
+
+export const OrchestrationThreadShell = OrchestrationThreadShellSource.pipe(
+  Schema.decodeTo(
+    Schema.toType(OrchestrationThreadShellDomain),
+    SchemaTransformation.transformOrFail({
+      decode: ({ planPaused, ...value }) =>
+        Effect.succeed({
+          ...value,
+          interactionMode: planPaused === true ? ("plan-paused" as const) : value.interactionMode,
+        }),
+      encode: (value) =>
+        Effect.succeed({
+          ...value,
+          interactionMode:
+            value.interactionMode === "plan-paused" ? ("plan" as const) : value.interactionMode,
+          ...(value.interactionMode === "plan-paused" ? { planPaused: true } : {}),
+        }),
+    }),
+  ),
+);
 export type OrchestrationThreadShell = typeof OrchestrationThreadShell.Type;
 
 export const OrchestrationShellSnapshot = Schema.Struct({
@@ -644,6 +805,7 @@ const ThreadCreateCommand = Schema.Struct({
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
+  workflow: Schema.optional(ProviderPlanWorkflow),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
@@ -762,6 +924,7 @@ const ThreadInteractionModeSetCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   interactionMode: ProviderInteractionMode,
+  workflow: Schema.optional(ProviderPlanWorkflow),
   createdAt: IsoDateTime,
 });
 
@@ -771,6 +934,7 @@ const ThreadTurnStartBootstrapCreateThread = Schema.Struct({
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
+  workflow: Schema.optional(ProviderPlanWorkflow),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
@@ -804,10 +968,10 @@ export const ThreadTurnStartCommand = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   titleSeed: Schema.optional(TrimmedNonEmptyString),
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
-  interactionMode: ProviderInteractionMode.pipe(
-    Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
-  ),
+  interactionMode: Schema.optional(ProviderInteractionMode),
+  workflow: Schema.optional(ProviderPlanWorkflow),
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
+  deliveryMode: Schema.optional(ProviderTurnDeliveryMode),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
   createdAt: IsoDateTime,
 });
@@ -826,7 +990,9 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   titleSeed: Schema.optional(TrimmedNonEmptyString),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
+  workflow: Schema.optional(ProviderPlanWorkflow),
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
+  deliveryMode: Schema.optional(ProviderTurnDeliveryMode),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
   createdAt: IsoDateTime,
 });
@@ -853,7 +1019,73 @@ const ThreadUserInputRespondCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   requestId: ApprovalRequestId,
-  answers: ProviderUserInputAnswers,
+  response: ProviderUserInputResponse,
+  createdAt: IsoDateTime,
+});
+
+const ClientThreadUserInputRespondSource = Schema.Struct({
+  type: Schema.Literal("thread.user-input.respond"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: ApprovalRequestId,
+  response: Schema.optional(Schema.Unknown),
+  answers: Schema.optional(Schema.Unknown),
+  createdAt: IsoDateTime,
+});
+
+const ClientThreadUserInputRespondCommand = ClientThreadUserInputRespondSource.pipe(
+  Schema.decodeTo(
+    ThreadUserInputRespondCommand,
+    SchemaTransformation.transformOrFail<
+      typeof ThreadUserInputRespondCommand.Encoded,
+      typeof ClientThreadUserInputRespondSource.Type
+    >({
+      decode: (raw) =>
+        decodeProviderUserInputResponse(normalizeProviderUserInputResponse(raw)).pipe(
+          Effect.map((response) => ({
+            type: raw.type,
+            commandId: raw.commandId,
+            threadId: raw.threadId,
+            requestId: raw.requestId,
+            response,
+            createdAt: raw.createdAt,
+          })),
+        ),
+      encode: (value) =>
+        Effect.succeed({
+          type: value.type,
+          commandId: CommandId.make(value.commandId),
+          threadId: ThreadId.make(value.threadId),
+          requestId: ApprovalRequestId.make(value.requestId),
+          response: value.response,
+          // Pre-response servers require scalar/list answers. The canonical response
+          // remains authoritative for current servers and preserves rich fields such as note.
+          ...(value.response.kind === "submit"
+            ? {
+                answers: Object.fromEntries(
+                  Object.entries(value.response.answers).map(([questionId, answer]) => [
+                    questionId,
+                    answer.customInput !== undefined
+                      ? answer.customInput
+                      : answer.selectedOptions.length === 1
+                        ? answer.selectedOptions[0]!
+                        : answer.selectedOptions,
+                  ]),
+                ),
+              }
+            : {}),
+          createdAt: value.createdAt,
+        }),
+    }),
+  ),
+);
+
+const ThreadPlanReviewRespondCommand = Schema.Struct({
+  type: Schema.Literal("thread.plan-review.respond"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: ApprovalRequestId,
+  decision: ProviderPlanReviewDecision,
   createdAt: IsoDateTime,
 });
 
@@ -894,6 +1126,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
+  ThreadPlanReviewRespondCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
 ]);
@@ -921,7 +1154,8 @@ export const ClientOrchestrationCommand = Schema.Union([
   ClientThreadTurnStartCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
-  ThreadUserInputRespondCommand,
+  ClientThreadUserInputRespondCommand,
+  ThreadPlanReviewRespondCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
 ]);
@@ -932,6 +1166,17 @@ const ThreadSessionSetCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   session: OrchestrationSession,
+  createdAt: IsoDateTime,
+});
+
+const ThreadInteractionModeApplyCommand = Schema.Struct({
+  type: Schema.Literal("thread.interaction-mode.apply"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  interactionMode: ProviderInteractionMode,
+  workflow: Schema.optional(ProviderPlanWorkflow),
+  requestCommandId: CommandId,
+  causationEventId: EventId,
   createdAt: IsoDateTime,
 });
 
@@ -982,6 +1227,8 @@ const ThreadActivityAppendCommand = Schema.Struct({
   threadId: ThreadId,
   activity: OrchestrationThreadActivity,
   createdAt: IsoDateTime,
+  causationEventId: Schema.optional(EventId),
+  correlationId: Schema.optional(CommandId),
 });
 
 const ThreadRevertCompleteCommand = Schema.Struct({
@@ -1001,6 +1248,7 @@ const ThreadTitleRegenerationCompleteCommand = Schema.Struct({
 });
 
 const InternalOrchestrationCommand = Schema.Union([
+  ThreadInteractionModeApplyCommand,
   ThreadSessionSetCommand,
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
@@ -1035,12 +1283,14 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.pin-reordered",
   "thread.meta-updated",
   "thread.runtime-mode-set",
+  "thread.interaction-mode-change-requested",
   "thread.interaction-mode-set",
   "thread.message-sent",
   "thread.turn-start-requested",
   "thread.turn-interrupt-requested",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
+  "thread.plan-review-response-requested",
   "thread.checkpoint-revert-requested",
   "thread.reverted",
   "thread.session-stop-requested",
@@ -1090,6 +1340,7 @@ export const ThreadCreatedPayload = Schema.Struct({
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
+  workflow: Schema.optional(ProviderPlanWorkflow),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
@@ -1183,11 +1434,19 @@ export const ThreadRuntimeModeSetPayload = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 
+export const ThreadInteractionModeChangeRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  interactionMode: ProviderInteractionMode,
+  workflow: Schema.optional(ProviderPlanWorkflow),
+  requestedAt: IsoDateTime,
+});
+
 export const ThreadInteractionModeSetPayload = Schema.Struct({
   threadId: ThreadId,
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
+  workflow: Schema.optional(ProviderPlanWorkflow),
   updatedAt: IsoDateTime,
 });
 
@@ -1212,7 +1471,9 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
+  workflow: Schema.optional(ProviderPlanWorkflow),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  deliveryMode: Schema.optional(ProviderTurnDeliveryMode),
   createdAt: IsoDateTime,
 });
 
@@ -1229,10 +1490,52 @@ export const ThreadApprovalResponseRequestedPayload = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
-const ThreadUserInputResponseRequestedPayload = Schema.Struct({
+const ThreadUserInputResponseRequestedPayloadWire = Schema.Struct({
   threadId: ThreadId,
   requestId: ApprovalRequestId,
-  answers: ProviderUserInputAnswers,
+  response: ProviderUserInputResponse,
+  createdAt: IsoDateTime,
+});
+
+const ThreadUserInputResponseRequestedPayloadSource = Schema.Struct({
+  threadId: ThreadId,
+  requestId: ApprovalRequestId,
+  response: Schema.optional(Schema.Unknown),
+  answers: Schema.optional(Schema.Unknown),
+  createdAt: IsoDateTime,
+});
+
+const ThreadUserInputResponseRequestedPayload = ThreadUserInputResponseRequestedPayloadSource.pipe(
+  Schema.decodeTo(
+    ThreadUserInputResponseRequestedPayloadWire,
+    SchemaTransformation.transformOrFail<
+      typeof ThreadUserInputResponseRequestedPayloadWire.Encoded,
+      typeof ThreadUserInputResponseRequestedPayloadSource.Type
+    >({
+      decode: (raw) =>
+        decodeProviderUserInputResponse(normalizeProviderUserInputResponse(raw)).pipe(
+          Effect.map((response) => ({
+            threadId: raw.threadId,
+            requestId: raw.requestId,
+            response,
+            createdAt: raw.createdAt,
+          })),
+        ),
+      encode: (value) =>
+        Effect.succeed({
+          threadId: ThreadId.make(value.threadId),
+          requestId: ApprovalRequestId.make(value.requestId),
+          response: value.response,
+          createdAt: value.createdAt,
+        }),
+    }),
+  ),
+);
+
+const ThreadPlanReviewResponseRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: ApprovalRequestId,
+  decision: ProviderPlanReviewDecision,
   createdAt: IsoDateTime,
 });
 
@@ -1382,6 +1685,11 @@ export const OrchestrationEvent = Schema.Union([
   }),
   Schema.Struct({
     ...EventBaseFields,
+    type: Schema.Literal("thread.interaction-mode-change-requested"),
+    payload: ThreadInteractionModeChangeRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
     type: Schema.Literal("thread.interaction-mode-set"),
     payload: ThreadInteractionModeSetPayload,
   }),
@@ -1409,6 +1717,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.user-input-response-requested"),
     payload: ThreadUserInputResponseRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.plan-review-response-requested"),
+    payload: ThreadPlanReviewResponseRequestedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

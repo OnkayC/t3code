@@ -753,7 +753,12 @@ const makeWsRpcLayer = (
       ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> =>
         Effect.gen(function* () {
           const bootstrap = command.bootstrap;
-          const { bootstrap: _bootstrap, ...finalTurnStartCommand } = command;
+          const { bootstrap: _bootstrap, workflow, ...turnStartWithoutBootstrap } = command;
+          const bootstrapWorkflow = workflow ?? bootstrap?.createThread?.workflow;
+          const finalTurnStartCommand = {
+            ...turnStartWithoutBootstrap,
+            ...(bootstrapWorkflow !== undefined ? { workflow: bootstrapWorkflow } : {}),
+          };
           let createdThread = false;
           let targetProjectId = bootstrap?.createThread?.projectId;
           let targetProjectCwd = bootstrap?.prepareWorktree?.projectCwd;
@@ -899,6 +904,7 @@ const makeWsRpcLayer = (
                 modelSelection: bootstrap.createThread.modelSelection,
                 runtimeMode: bootstrap.createThread.runtimeMode,
                 interactionMode: bootstrap.createThread.interactionMode,
+                ...(bootstrapWorkflow !== undefined ? { workflow: bootstrapWorkflow } : {}),
                 branch: bootstrap.createThread.branch,
                 worktreePath: bootstrap.createThread.worktreePath,
                 createdAt: bootstrap.createThread.createdAt,

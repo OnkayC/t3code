@@ -29,6 +29,7 @@ function thread(
   | "updatedAt"
   | "hasPendingApprovals"
   | "hasPendingUserInput"
+  | "hasPendingPlanReview"
 > {
   return {
     id: "thread-1" as ThreadId,
@@ -39,6 +40,7 @@ function thread(
     updatedAt: NOW,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
+    hasPendingPlanReview: false,
     ...overrides,
   };
 }
@@ -74,6 +76,31 @@ describe("projectThreadAwareness", () => {
 
     expect(state?.phase).toBe("waiting_for_approval");
     expect(state?.headline).toBe("Approval needed");
+  });
+
+  it("projects pending plan reviews as waiting input with review copy", () => {
+    const state = projectThreadAwareness({
+      environmentId: "env-1" as EnvironmentId,
+      project,
+      thread: thread({
+        hasPendingPlanReview: true,
+        session: {
+          threadId: "thread-1" as ThreadId,
+          status: "running",
+          providerName: "OMP",
+          runtimeMode: "full-access",
+          activeTurnId: "turn-1" as TurnId,
+          lastError: null,
+          updatedAt: NOW,
+        },
+      }),
+    });
+
+    expect(state).toMatchObject({
+      phase: "waiting_for_input",
+      headline: "Plan review needed",
+      detail: "Execute, refine, or cancel the proposed plan.",
+    });
   });
 
   it("projects running provider sessions", () => {

@@ -17,7 +17,7 @@ import {
   type ProviderRuntimeEvent,
   type ProviderRequestKind,
   type ThreadTokenUsageSnapshot,
-  type ProviderUserInputAnswers,
+  type ProviderUserInputResponse,
   RuntimeItemId,
   RuntimeRequestId,
   RuntimeTaskId,
@@ -128,9 +128,27 @@ type CodexLifecycleItem =
   | EffectCodexSchema.V2ItemStartedNotification["item"]
   | EffectCodexSchema.V2ItemCompletedNotification["item"];
 
-type CodexToolUserInputQuestion =
-  | EffectCodexSchema.ServerRequest__ToolRequestUserInputQuestion
-  | EffectCodexSchema.ToolRequestUserInputParams__ToolRequestUserInputQuestion;
+const CodexToolUserInputPayload = Schema.Struct({
+  questions: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      header: Schema.String,
+      question: Schema.String,
+      options: Schema.optionalKey(
+        Schema.Union([
+          Schema.Array(
+            Schema.Struct({
+              label: Schema.String,
+              description: Schema.optionalKey(Schema.String),
+            }),
+          ),
+          Schema.Null,
+        ]),
+      ),
+    }),
+  ),
+});
+type CodexToolUserInputQuestion = (typeof CodexToolUserInputPayload.Type)["questions"][number];
 
 const ApprovalDecisionPayload = Schema.Struct({
   decision: ProviderApprovalDecision,
@@ -332,7 +350,7 @@ function toRequestTypeFromKind(kind: ProviderRequestKind | undefined): Canonical
 
 function toCanonicalUserInputAnswers(
   answers: EffectCodexSchema.ToolRequestUserInputResponse["answers"],
-): ProviderUserInputAnswers {
+): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(answers).map(([questionId, value]) => {
       const normalizedAnswers = value.answers.length === 1 ? value.answers[0]! : [...value.answers];
@@ -349,10 +367,10 @@ function toUserInputQuestions(questions: ReadonlyArray<CodexToolUserInputQuestio
           ?.map((option) => {
             const label = trimText(option.label);
             const description = trimText(option.description);
-            if (!label || !description) {
+            if (!label) {
               return undefined;
             }
-            return { label, description };
+            return { label, ...(description ? { description } : {}) };
           })
           .filter((option) => option !== undefined) ?? [];
 
@@ -785,9 +803,7 @@ function mapToRuntimeEvents(
 
   if (event.kind === "request") {
     if (event.method === "item/tool/requestUserInput") {
-      const payload =
-        readPayload(EffectCodexSchema.ServerRequest__ToolRequestUserInputParams, event.payload) ??
-        readPayload(EffectCodexSchema.ToolRequestUserInputParams, event.payload);
+      const payload = readPayload(CodexToolUserInputPayload, event.payload);
       const questions = payload ? toUserInputQuestions(payload.questions) : undefined;
       if (!questions) {
         return [];
@@ -798,6 +814,7 @@ function mapToRuntimeEvents(
           type: "user-input.requested",
           payload: {
             questions,
+            allowedActions: ["submit"],
           },
         },
       ];
@@ -1315,6 +1332,7 @@ function mapToRuntimeEvents(
         ...runtimeEventBase(event, canonicalThreadId),
         type: "user-input.resolved",
         payload: {
+          outcome: "submitted",
           answers: toCanonicalUserInputAnswers(payload.answers),
         },
       },
@@ -1903,16 +1921,26 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   const respondToUserInput: CodexAdapterShape["respondToUserInput"] = (
     threadId,
     requestId,
-    answers,
-  ) =>
-    requireSession(threadId).pipe(
-      Effect.flatMap((session) => session.runtime.respondToUserInput(requestId, answers)),
+    response: ProviderUserInputResponse,
+  ) => {
+    if (response.kind !== "submit") {
+      return Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "item/tool/requestUserInput",
+          detail: `User-input action '${response.kind}' is not supported by Codex.`,
+        }),
+      );
+    }
+    return requireSession(threadId).pipe(
+      Effect.flatMap((session) => session.runtime.respondToUserInput(requestId, response.answers)),
       Effect.mapError((cause) =>
         cause._tag === "ProviderAdapterSessionNotFoundError"
           ? cause
           : mapCodexRuntimeError(threadId, "item/tool/requestUserInput", cause),
       ),
     );
+  };
 
   const writeNativeEvent = Effect.fnUntraced(function* (event: ProviderEvent) {
     if (!nativeEventLogger) {

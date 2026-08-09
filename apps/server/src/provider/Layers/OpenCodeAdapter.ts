@@ -4,7 +4,9 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderRuntimeEvent,
+  type ProviderApprovalDecision,
   type ProviderSession,
+  type ProviderUserInputResponse,
   RuntimeItemId,
   RuntimeRequestId,
   ThreadId,
@@ -330,7 +332,7 @@ function mapPermissionToRequestType(
   }
 }
 
-function mapPermissionDecision(reply: "once" | "always" | "reject"): string {
+function mapPermissionDecision(reply: "once" | "always" | "reject"): ProviderApprovalDecision {
   switch (reply) {
     case "once":
       return "accept";
@@ -990,6 +992,7 @@ export function makeOpenCodeAdapter(
             type: "user-input.requested",
             payload: {
               questions: normalizeQuestionRequest(event.properties),
+              allowedActions: ["submit", "cancel"],
             },
           });
           break;
@@ -1012,7 +1015,7 @@ export function makeOpenCodeAdapter(
               raw: event,
             })),
             type: "user-input.resolved",
-            payload: { answers },
+            payload: { outcome: "submitted", answers },
           });
           break;
         }
@@ -1027,7 +1030,7 @@ export function makeOpenCodeAdapter(
               raw: event,
             })),
             type: "user-input.resolved",
-            payload: { answers: {} },
+            payload: { outcome: "cancelled" },
           });
           break;
         }
@@ -1580,7 +1583,7 @@ export function makeOpenCodeAdapter(
 
     const respondToUserInput: OpenCodeAdapterShape["respondToUserInput"] = Effect.fn(
       "respondToUserInput",
-    )(function* (threadId, requestId, answers) {
+    )(function* (threadId, requestId, response: ProviderUserInputResponse) {
       const context = yield* ensureSessionContext(sessions, threadId);
       const request = context.pendingQuestions.get(requestId);
       if (!request) {
@@ -1590,11 +1593,25 @@ export function makeOpenCodeAdapter(
           detail: `Unknown pending user-input request: ${requestId}`,
         });
       }
+      if (response.kind === "cancel") {
+        yield* runOpenCodeSdk("question.reject", () =>
+          context.client.question.reject({ requestID: requestId }),
+        ).pipe(Effect.mapError(toRequestError));
+        return;
+      }
+      // Chat is a hard reject — OpenCode questions are not free-form chat.
+      if (response.kind !== "submit") {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "question.reply",
+          detail: `User-input action '${response.kind}' is not supported by OpenCode.`,
+        });
+      }
 
       yield* runOpenCodeSdk("question.reply", () =>
         context.client.question.reply({
           requestID: requestId,
-          answers: toOpenCodeQuestionAnswers(request, answers),
+          answers: toOpenCodeQuestionAnswers(request, response.answers),
         }),
       ).pipe(Effect.mapError(toRequestError));
     });

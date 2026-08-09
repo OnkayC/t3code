@@ -287,6 +287,7 @@ export function projectEvent(
             modelSelection: payload.modelSelection,
             runtimeMode: payload.runtimeMode,
             interactionMode: payload.interactionMode,
+            ...(payload.workflow !== undefined ? { workflow: payload.workflow } : {}),
             branch: payload.branch,
             worktreePath: payload.worktreePath,
             latestTurn: null,
@@ -464,6 +465,9 @@ export function projectEvent(
         })),
       );
 
+    case "thread.interaction-mode-change-requested":
+      return Effect.succeed(nextBase);
+
     case "thread.interaction-mode-set":
       return decodeForEvent(
         ThreadInteractionModeSetPayload,
@@ -475,6 +479,7 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             interactionMode: payload.interactionMode,
+            ...(payload.workflow !== undefined ? { workflow: payload.workflow } : {}),
             updatedAt: payload.updatedAt,
           }),
         })),

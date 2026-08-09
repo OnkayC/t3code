@@ -4,6 +4,7 @@ import type {
   EnvironmentId,
   ModelSelection,
   ProviderInteractionMode,
+  ProviderPlanWorkflow,
   ProviderOptionSelection,
   RuntimeMode,
   ServerProviderSkill,
@@ -132,6 +133,7 @@ type NewTaskFlowContextValue = {
   readonly availableBranches: ReadonlyArray<VcsRef>;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
+  readonly workflow: ProviderPlanWorkflow | null;
   readonly expandedProvider: string | null;
   readonly environments: ReadonlyArray<{
     readonly environmentId: EnvironmentId;
@@ -164,7 +166,10 @@ type NewTaskFlowContextValue = {
   readonly setBranchQuery: (value: string) => void;
   readonly loadBranches: () => Promise<void>;
   readonly setRuntimeMode: (value: RuntimeMode) => void;
-  readonly setInteractionMode: (value: ProviderInteractionMode) => void;
+  readonly setInteractionMode: (
+    value: ProviderInteractionMode,
+    workflow?: ProviderPlanWorkflow,
+  ) => void;
   readonly setSelectedModelOptions: (
     value: ReadonlyArray<ProviderOptionSelection> | undefined,
   ) => void;
@@ -358,6 +363,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     true;
   const runtimeMode = selectedProjectDraft.runtimeMode ?? DEFAULT_RUNTIME_MODE;
   const interactionMode = selectedProjectDraft.interactionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE;
+  const workflow = selectedProjectDraft.workflow ?? null;
 
   // Stored selections (draft and project default) only count while their
   // provider is usable on the server; otherwise the server's default model
@@ -403,6 +409,35 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       )?.skills ?? [],
     [selectedEnvironmentServerConfig, selectedModel?.instanceId],
   );
+  const selectedProviderStatus = useMemo(
+    () =>
+      selectedEnvironmentServerConfig?.providers.find(
+        (provider) => provider.instanceId === selectedModel?.instanceId,
+      ) ?? null,
+    [selectedEnvironmentServerConfig, selectedModel?.instanceId],
+  );
+
+  const setRuntimeMode = useCallback(
+    (value: RuntimeMode) => {
+      if (selectedProjectDraftKey) {
+        updateComposerDraftSettings(selectedProjectDraftKey, { runtimeMode: value });
+      }
+    },
+    [selectedProjectDraftKey],
+  );
+
+  useEffect(() => {
+    if (
+      selectedProviderStatus?.supportedRuntimeModes &&
+      selectedProviderStatus.supportedRuntimeModes.length > 0 &&
+      !selectedProviderStatus.supportedRuntimeModes.includes(runtimeMode)
+    ) {
+      const fallback = selectedProviderStatus.supportedRuntimeModes[0];
+      if (fallback) {
+        setRuntimeMode(fallback);
+      }
+    }
+  }, [selectedProviderStatus?.supportedRuntimeModes, runtimeMode, setRuntimeMode]);
   const setSelectedModelKey = useCallback(
     (key: string | null) => {
       if (!key || !selectedProjectDraftKey) {
@@ -624,18 +659,13 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     }
   }, [allBranchRefs, availableBranches, selectBranch, selectedBranchName, workspaceMode]);
 
-  const setRuntimeMode = useCallback(
-    (value: RuntimeMode) => {
-      if (selectedProjectDraftKey) {
-        updateComposerDraftSettings(selectedProjectDraftKey, { runtimeMode: value });
-      }
-    },
-    [selectedProjectDraftKey],
-  );
   const setInteractionMode = useCallback(
-    (value: ProviderInteractionMode) => {
+    (value: ProviderInteractionMode, workflow?: ProviderPlanWorkflow) => {
       if (selectedProjectDraftKey) {
-        updateComposerDraftSettings(selectedProjectDraftKey, { interactionMode: value });
+        updateComposerDraftSettings(selectedProjectDraftKey, {
+          interactionMode: value,
+          ...(workflow !== undefined ? { workflow } : {}),
+        });
       }
     },
     [selectedProjectDraftKey],
@@ -655,6 +685,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
         modelSelection: message.modelSelection,
         runtimeMode: message.runtimeMode,
         interactionMode: message.interactionMode,
+        ...(message.workflow !== undefined ? { workflow: message.workflow } : {}),
         workspaceSelection: {
           mode: message.creation.workspaceMode,
           branch: message.creation.branch,
@@ -715,6 +746,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
         modelSelection: draftModelSelection,
         runtimeMode: draft.runtimeMode ?? DEFAULT_RUNTIME_MODE,
         interactionMode: draft.interactionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE,
+        ...(draft.workflow !== undefined ? { workflow: draft.workflow } : {}),
         creation: {
           projectId: selectedProject.id,
           ...(projectTitle !== undefined ? { projectTitle } : {}),
@@ -854,6 +886,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       availableBranches,
       runtimeMode,
       interactionMode,
+      workflow,
       expandedProvider,
       environments,
       selectedProject,
@@ -901,6 +934,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       filteredBranches,
       finishEditingPendingTask,
       interactionMode,
+      workflow,
       loadBranches,
       projectScopes,
       modelOptions,

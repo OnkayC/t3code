@@ -7,13 +7,23 @@ import {
 } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as Option from "effect/Option";
-import { EnvironmentId, ThreadId, type ProjectScript } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ThreadId,
+  type ProjectScript,
+  type ProviderInteractionMode,
+  type ProviderPlanWorkflow,
+} from "@t3tools/contracts";
 import {
   requestOlderThreadTurns,
   threadHasOlderTurns,
 } from "@t3tools/client-runtime/state/threads";
+import {
+  deriveAgentPanelModel,
+  foldSubagentActivities,
+} from "@t3tools/client-runtime/state/subagentRuntime";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
-import { Platform, ScrollView, View } from "react-native";
+import { Alert, Platform, Pressable, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWorkspaceState } from "../../state/workspace";
 import { useEnvironmentQuery } from "../../state/query";
@@ -21,6 +31,7 @@ import { dismissGitActionResult, useGitActionProgress } from "../../state/use-vc
 import { vcsEnvironment } from "../../state/vcs";
 
 import { EmptyState } from "../../components/EmptyState";
+import { AppText as Text } from "../../components/AppText";
 import {
   AndroidScreenHeader,
   type AndroidHeaderAction,
@@ -39,6 +50,7 @@ import { useKnownTerminalSessions } from "../../state/use-terminal-session";
 import { useSelectedThreadDetailState } from "../../state/use-thread-detail";
 import { useThreadSelection } from "../../state/use-thread-selection";
 import { GitActionProgressOverlay } from "./GitActionProgressOverlay";
+import { AgentsSheet } from "./AgentsSheet";
 import {
   buildTerminalMenuSessions,
   nextOpenTerminalId,
@@ -64,6 +76,7 @@ import { useSelectedThreadWorktree } from "../../state/use-selected-thread-workt
 import { useThreadComposerState } from "../../state/use-thread-composer-state";
 import { threadEnvironment } from "../../state/threads";
 import { projectThreadContentPresentation } from "./threadContentPresentation";
+import { checkpointRevertHasSettled, type PendingCheckpointRevert } from "./checkpoint-revert";
 import {
   useAdaptiveWorkspaceLayout,
   useAdaptiveWorkspacePaneRole,
@@ -213,7 +226,31 @@ function ThreadRouteContent(
   const gitState = useSelectedThreadGitState();
   const gitActions = useSelectedThreadGitActions();
   const requests = useSelectedThreadRequests();
+  const agentPanelModel = useMemo(
+    () =>
+      deriveAgentPanelModel({
+        agents: foldSubagentActivities(selectedThreadDetail?.activities ?? [], {
+          sessionLive:
+            selectedThreadDetail?.session?.status === "running" ||
+            selectedThreadDetail?.session?.status === "starting" ||
+            selectedThreadDetail?.session?.status === "ready",
+        }),
+      }),
+    [selectedThreadDetail?.activities, selectedThreadDetail?.session?.status],
+  );
+  const [agentsSheetVisible, setAgentsSheetVisible] = useState(false);
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, "thread interrupt");
+  const revertThreadCheckpoint = useAtomCommand(
+    threadEnvironment.revertCheckpoint,
+    "thread checkpoint revert",
+  );
+  const setThreadInteractionMode = useAtomCommand(
+    threadEnvironment.setInteractionMode,
+    "thread interaction mode",
+  );
+  const [pendingCheckpointRevert, setPendingCheckpointRevert] =
+    useState<PendingCheckpointRevert | null>(null);
+  const isRevertingCheckpoint = pendingCheckpointRevert !== null;
   const navigation = useNavigation();
   const params = props.route.params;
   const environmentIdRaw = firstRouteParam(params.environmentId);
@@ -233,6 +270,14 @@ function ThreadRouteContent(
     }
     return null;
   })();
+  useEffect(() => {
+    setPendingCheckpointRevert((pending) => {
+      if (pending === null) return null;
+      if (selectedThread?.id !== pending.threadId) return null;
+      if (selectedThreadDetail === null) return pending;
+      return checkpointRevertHasSettled(pending, selectedThreadDetail) ? null : pending;
+    });
+  }, [selectedThread?.id, selectedThreadDetail]);
   useEffect(() => {
     if (
       fileInspector.supported &&
@@ -332,6 +377,75 @@ function ThreadRouteContent(
     }
     onReconnectEnvironment(environmentId);
   }, [environmentId, onReconnectEnvironment]);
+  const handleRevertCheckpoint = useCallback(
+    (turnCount: number) => {
+      if (
+        !selectedThread ||
+        !selectedThreadDetail ||
+        composer.activeThreadBusy ||
+        isRevertingCheckpoint
+      ) {
+        return;
+      }
+      const discardedCheckpointRefs = selectedThreadDetail.checkpoints
+        .filter((checkpoint) => checkpoint.checkpointTurnCount > turnCount)
+        .map((checkpoint) => checkpoint.checkpointRef);
+      if (discardedCheckpointRefs.length === 0) {
+        return;
+      }
+      Alert.alert(
+        `Revert to checkpoint ${turnCount}?`,
+        "Newer messages and turn changes will be discarded. This action cannot be undone.",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Revert",
+            style: "destructive",
+            onPress: () => {
+              const requestedAt = new Date().toISOString();
+              setPendingCheckpointRevert({
+                threadId: selectedThread.id,
+                turnCount,
+                requestedAt,
+                discardedCheckpointRefs,
+              });
+              void revertThreadCheckpoint({
+                environmentId: selectedThread.environmentId,
+                input: { threadId: selectedThread.id, turnCount, createdAt: requestedAt },
+              }).then((result) => {
+                if (result._tag !== "Failure") return;
+                setPendingCheckpointRevert((pending) =>
+                  pending?.requestedAt === requestedAt ? null : pending,
+                );
+              });
+            },
+          },
+        ],
+      );
+    },
+    [
+      composer.activeThreadBusy,
+      isRevertingCheckpoint,
+      revertThreadCheckpoint,
+      selectedThread,
+      selectedThreadDetail,
+    ],
+  );
+  const handleUpdateInteractionMode = useCallback(
+    (interactionMode: ProviderInteractionMode, workflow?: ProviderPlanWorkflow) => {
+      composer.onUpdateInteractionMode(interactionMode, workflow);
+      if (!selectedThread) return;
+      void setThreadInteractionMode({
+        environmentId: selectedThread.environmentId,
+        input: {
+          threadId: selectedThread.id,
+          interactionMode,
+          ...(workflow !== undefined ? { workflow } : {}),
+        },
+      });
+    },
+    [composer, selectedThread, setThreadInteractionMode],
+  );
 
   /* ─── Git action progress (for overlay banner) ──────────────────── */
   const gitActionProgressTarget = useMemo(
@@ -766,8 +880,21 @@ function ThreadRouteContent(
       <GitActionProgressOverlay progress={gitActionProgress} onDismiss={dismissGitActionResult} />
 
       <View className="flex-1 bg-screen">
+        {agentPanelModel.hasAgents ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Open Agents"
+            className="absolute right-4 top-3 z-20 rounded-full border border-neutral-200 bg-neutral-50 px-3 py-2 shadow-sm dark:border-white/8 dark:bg-neutral-900"
+            onPress={() => setAgentsSheetVisible(true)}
+          >
+            <Text className="font-t3-bold text-xs text-neutral-700 dark:text-neutral-200">
+              Agents {agentPanelModel.liveCount > 0 ? `· ${agentPanelModel.liveCount}` : ""}
+            </Text>
+          </Pressable>
+        ) : null}
         <ThreadDetailScreen
           selectedThread={selectedThreadWithDraftSettings ?? selectedThread}
+          workflow={composer.workflow}
           contentPresentation={contentPresentation}
           screenTone={connectionTone(routeConnectionState)}
           connectionError={routeConnectionError}
@@ -777,6 +904,13 @@ function ThreadRouteContent(
           activePendingApproval={requests.activePendingApproval}
           respondingApprovalId={requests.respondingApprovalId}
           activePendingUserInput={requests.activePendingUserInput}
+          activePendingPlanReview={requests.activePendingPlanReview}
+          respondingPlanReviewScope={requests.respondingPlanReviewScope}
+          queuedTurns={requests.queuedTurns}
+          cancellingQueuedTurnIds={requests.cancellingQueuedTurnIds}
+          onCancelQueuedTurn={requests.onCancelQueuedTurn}
+          onRevertCheckpoint={handleRevertCheckpoint}
+          checkpointRevertDisabled={composer.activeThreadBusy || isRevertingCheckpoint}
           activePendingUserInputDrafts={requests.activePendingUserInputDrafts}
           activePendingUserInputAnswers={requests.activePendingUserInputAnswers}
           respondingUserInputId={requests.respondingUserInputId}
@@ -803,11 +937,18 @@ function ThreadRouteContent(
           onReconnectEnvironment={handleReconnectEnvironment}
           onUpdateThreadModelSelection={composer.onUpdateModelSelection}
           onUpdateThreadRuntimeMode={composer.onUpdateRuntimeMode}
-          onUpdateThreadInteractionMode={composer.onUpdateInteractionMode}
+          onUpdateThreadInteractionMode={handleUpdateInteractionMode}
           onRespondToApproval={requests.onRespondToApproval}
           onSelectUserInputOption={requests.onSelectUserInputOption}
           onChangeUserInputCustomAnswer={requests.onChangeUserInputCustomAnswer}
-          onSubmitUserInput={requests.onSubmitUserInput}
+          onChangeUserInputNote={requests.onChangeUserInputNote}
+          onRespondToUserInput={requests.onRespondToUserInput}
+          onRespondToPlanReview={requests.onRespondToPlanReview}
+        />
+        <AgentsSheet
+          visible={agentsSheetVisible}
+          model={agentPanelModel}
+          onClose={() => setAgentsSheetVisible(false)}
         />
       </View>
     </>

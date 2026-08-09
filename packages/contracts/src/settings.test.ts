@@ -6,6 +6,7 @@ import {
   ClientSettingsSchema,
   ClientSettingsPatch,
   DEFAULT_SERVER_SETTINGS,
+  OmpSettings,
   ServerSettings,
   ServerSettingsPatch,
 } from "./settings.ts";
@@ -15,6 +16,7 @@ const decodeClientSettingsPatch = Schema.decodeUnknownSync(ClientSettingsPatch);
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
+const decodeOmpSettings = Schema.decodeUnknownSync(OmpSettings);
 
 describe("ClientSettings word wrap", () => {
   it("defaults word wrap on", () => {
@@ -111,6 +113,34 @@ describe("ClientSettings sidebar v2", () => {
   });
 });
 
+describe("OmpSettings", () => {
+  it("defaults to the native OMP binary and enabled driver", () => {
+    expect(decodeOmpSettings({})).toEqual({
+      enabled: true,
+      binaryPath: "omp",
+      launchArgs: "",
+      customModels: [],
+    });
+  });
+
+  it("decodes profile and launch arguments", () => {
+    expect(
+      decodeOmpSettings({
+        enabled: false,
+        binaryPath: " /opt/homebrew/bin/omp ",
+        profile: " work ",
+        launchArgs: " --no-title ",
+      }),
+    ).toEqual({
+      enabled: false,
+      binaryPath: "/opt/homebrew/bin/omp",
+      profile: "work",
+      customModels: [],
+      launchArgs: "--no-title",
+    });
+  });
+});
+
 describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
   it("defaults text generation to Luna at low reasoning effort", () => {
     expect(DEFAULT_SERVER_SETTINGS.textGenerationModelSelection).toEqual({
@@ -130,6 +160,8 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
     // Legacy `providers` struct is still hydrated with its per-driver defaults
     // so existing call sites keep working through the migration.
     expect(decoded.providers.codex.enabled).toBe(true);
+    expect(decoded.providers.omp.enabled).toBe(true);
+    expect(decoded.providers.omp.binaryPath).toBe("omp");
   });
 
   it("decodes a multi-instance map mixing first-party and fork drivers", () => {
@@ -258,6 +290,12 @@ describe("ServerSettingsPatch string normalization", () => {
           homePath: "  ~/.codex  ",
           launchArgs: "  --strict-config --enable foo  ",
         },
+        omp: {
+          binaryPath: "  /opt/homebrew/bin/omp  ",
+          profile: "  work  ",
+          launchArgs: "  --no-title  ",
+          customModels: ["  custom/model  "],
+        },
       },
       providerInstances: {
         codex_personal: {
@@ -274,6 +312,10 @@ describe("ServerSettingsPatch string normalization", () => {
     expect(patch.providers?.codex?.binaryPath).toBe("/opt/homebrew/bin/codex");
     expect(patch.providers?.codex?.homePath).toBe("~/.codex");
     expect(patch.providers?.codex?.launchArgs).toBe("--strict-config --enable foo");
+    expect(patch.providers?.omp?.binaryPath).toBe("/opt/homebrew/bin/omp");
+    expect(patch.providers?.omp?.profile).toBe("work");
+    expect(patch.providers?.omp?.launchArgs).toBe("--no-title");
+    expect(patch.providers?.omp?.customModels).toEqual(["  custom/model  "]);
     expect(patch.providerInstances?.[ProviderInstanceId.make("codex_personal")]?.driver).toBe(
       "codex",
     );

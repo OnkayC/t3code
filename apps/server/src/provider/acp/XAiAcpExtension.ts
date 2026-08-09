@@ -1,4 +1,4 @@
-import type { ProviderUserInputAnswers, UserInputQuestion } from "@t3tools/contracts";
+import type { UserInputQuestion } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
@@ -161,7 +161,7 @@ function normalizeAnswerForXAi(
 }
 
 function findQuestionAnswer(
-  answers: ProviderUserInputAnswers,
+  answers: Readonly<Record<string, unknown>>,
   question: XAiAskUserQuestionRequestParams["questions"][number],
 ): unknown {
   const key = question.id ?? question.question;
@@ -170,7 +170,7 @@ function findQuestionAnswer(
 
 export function makeXAiAskUserQuestionResponse(
   params: XAiAskUserQuestionRequest,
-  answers: ProviderUserInputAnswers,
+  answers: Readonly<Record<string, unknown>>,
 ): XAiAskUserQuestionAcceptedResponse {
   const questions = unwrapAskUserQuestionParams(params).questions;
   const normalized = questions.flatMap((question) => {

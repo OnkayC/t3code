@@ -5,6 +5,7 @@ import * as Schema from "effect/Schema";
 import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
+  ClientOrchestrationCommand,
   ModelSelection,
   OrchestrationCommand,
   OrchestrationEvent,
@@ -25,6 +26,7 @@ import {
   ThreadTurnStartRequestedPayload,
 } from "./orchestration.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
+import { ApprovalRequestId, CommandId, IsoDateTime, ProjectId, ThreadId } from "./baseSchemas.ts";
 
 const decodeTurnDiffInput = Schema.decodeUnknownEffect(OrchestrationGetTurnDiffInput);
 const decodeFullThreadDiffInput = Schema.decodeUnknownEffect(OrchestrationGetFullThreadDiffInput);
@@ -41,6 +43,11 @@ const decodeOrchestrationProposedPlan = Schema.decodeUnknownEffect(Orchestration
 const decodeOrchestrationSession = Schema.decodeUnknownEffect(OrchestrationSession);
 const decodeOrchestrationThread = Schema.decodeUnknownEffect(OrchestrationThread);
 const decodeOrchestrationThreadShell = Schema.decodeUnknownEffect(OrchestrationThreadShell);
+const encodeOrchestrationThread = Schema.encodeEffect(OrchestrationThread);
+const encodeOrchestrationThreadShell = Schema.encodeEffect(OrchestrationThreadShell);
+const decodeLegacyThreadSnapshot = Schema.decodeUnknownEffect(
+  Schema.Struct({ interactionMode: Schema.Literals(["default", "plan"]) }),
+);
 const encodeThreadCreatedPayload = Schema.encodeEffect(ThreadCreatedPayload);
 
 function getOptionValue(
@@ -51,8 +58,21 @@ function getOptionValue(
 }
 const decodeThreadCreatedPayload = Schema.decodeUnknownEffect(ThreadCreatedPayload);
 const decodeOrchestrationCommand = Schema.decodeUnknownEffect(OrchestrationCommand);
+const decodeClientOrchestrationCommand = Schema.decodeUnknownEffect(ClientOrchestrationCommand);
 const decodeOrchestrationEvent = Schema.decodeUnknownEffect(OrchestrationEvent);
 const decodeThreadMetaUpdatedPayload = Schema.decodeUnknownEffect(ThreadMetaUpdatedPayload);
+const encodeClientOrchestrationCommand = Schema.encodeEffect(ClientOrchestrationCommand);
+const LegacyThreadUserInputRespondCommand = Schema.Struct({
+  type: Schema.Literal("thread.user-input.respond"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: ApprovalRequestId,
+  answers: Schema.Record(Schema.String, Schema.Unknown),
+  createdAt: IsoDateTime,
+});
+const decodeLegacyThreadUserInputRespondCommand = Schema.decodeUnknownEffect(
+  LegacyThreadUserInputRespondCommand,
+);
 
 it.effect("parses turn diff input when fromTurnCount <= toTurnCount", () =>
   Effect.gen(function* () {
@@ -206,7 +226,7 @@ it.effect("rejects command fields that become empty after trim", () =>
   }),
 );
 
-it.effect("decodes thread.turn.start defaults for provider and runtime mode", () =>
+it.effect("keeps omitted thread.turn.start interaction mode distinguishable from defaults", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeThreadTurnStartCommand({
       type: "thread.turn.start",
@@ -222,11 +242,12 @@ it.effect("decodes thread.turn.start defaults for provider and runtime mode", ()
     });
     assert.strictEqual(parsed.modelSelection, undefined);
     assert.strictEqual(parsed.runtimeMode, DEFAULT_RUNTIME_MODE);
-    assert.strictEqual(parsed.interactionMode, DEFAULT_PROVIDER_INTERACTION_MODE);
+    assert.strictEqual(parsed.interactionMode, undefined);
+    assert.strictEqual(parsed.workflow, undefined);
   }),
 );
 
-it.effect("preserves explicit provider and runtime mode in thread.turn.start", () =>
+it.effect("preserves explicit provider, runtime, and interaction mode in thread.turn.start", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeThreadTurnStartCommand({
       type: "thread.turn.start",
@@ -243,11 +264,12 @@ it.effect("preserves explicit provider and runtime mode in thread.turn.start", (
         model: "gpt-5.4",
       },
       runtimeMode: "full-access",
+      interactionMode: "plan",
       createdAt: "2026-01-01T00:00:00.000Z",
     });
     assert.strictEqual(parsed.modelSelection?.instanceId, "codex");
     assert.strictEqual(parsed.runtimeMode, "full-access");
-    assert.strictEqual(parsed.interactionMode, DEFAULT_PROVIDER_INTERACTION_MODE);
+    assert.strictEqual(parsed.interactionMode, "plan");
   }),
 );
 
@@ -291,6 +313,93 @@ it.effect("accepts bootstrap metadata in thread.turn.start", () =>
     assert.strictEqual(parsed.bootstrap?.prepareWorktree?.baseBranch, "main");
     assert.strictEqual(parsed.bootstrap?.prepareWorktree?.startFromOrigin, true);
     assert.strictEqual(parsed.bootstrap?.runSetupScript, true);
+  }),
+);
+
+it.effect("preserves draft plan workflow through client turn-start decoding", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeClientOrchestrationCommand({
+      type: "thread.turn.start",
+      commandId: "cmd-turn-workflow",
+      threadId: "thread-workflow",
+      message: {
+        messageId: "msg-workflow",
+        role: "user",
+        text: "plan iteratively",
+        attachments: [],
+      },
+      modelSelection: {
+        provider: "omp",
+        model: "gpt-5.4",
+      },
+      runtimeMode: "full-access",
+      interactionMode: "plan",
+      workflow: "iterative",
+      bootstrap: {
+        createThread: {
+          projectId: "project-1",
+          title: "Iterative draft",
+          modelSelection: {
+            provider: "omp",
+            model: "gpt-5.4",
+          },
+          runtimeMode: "full-access",
+          interactionMode: "plan",
+          workflow: "iterative",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(parsed.type, "thread.turn.start");
+    if (parsed.type !== "thread.turn.start") throw new Error("expected turn start");
+    assert.strictEqual(parsed.workflow, "iterative");
+    assert.strictEqual(parsed.bootstrap?.createThread?.workflow, "iterative");
+  }),
+);
+
+it.effect("decodes workflow on thread.create and thread.created", () =>
+  Effect.gen(function* () {
+    const created = yield* decodeThreadCreatedPayload({
+      threadId: "thread-1",
+      projectId: "project-1",
+      title: "Workflow thread",
+      modelSelection: {
+        provider: "omp",
+        model: "gpt-5.4",
+      },
+      runtimeMode: "full-access",
+      interactionMode: "plan",
+      workflow: "iterative",
+      branch: null,
+      worktreePath: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(created.workflow, "iterative");
+
+    const command = yield* decodeOrchestrationCommand({
+      type: "thread.create",
+      commandId: "cmd-create-workflow",
+      threadId: "thread-1",
+      projectId: "project-1",
+      title: "Workflow thread",
+      modelSelection: {
+        provider: "omp",
+        model: "gpt-5.4",
+      },
+      runtimeMode: "full-access",
+      interactionMode: "plan",
+      workflow: "iterative",
+      branch: null,
+      worktreePath: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(command.type, "thread.create");
+    if (command.type !== "thread.create") throw new Error("expected thread.create");
+    assert.strictEqual(command.workflow, "iterative");
   }),
 );
 
@@ -422,6 +531,101 @@ it.effect("defaults settled fields when decoding historical thread data", () =>
     assert.strictEqual(thread.settledAt, null);
     assert.strictEqual(shell.settledOverride, null);
     assert.strictEqual(shell.settledAt, null);
+    assert.strictEqual(thread.workflow, undefined);
+    assert.strictEqual(shell.workflow, undefined);
+  }),
+);
+
+it.effect("decodes selected plan workflow from projected thread data", () =>
+  Effect.gen(function* () {
+    const common = {
+      id: "thread-plan",
+      projectId: "project-1",
+      title: "Plan thread",
+      modelSelection: { provider: "codex", model: "gpt-5.4" },
+      runtimeMode: "full-access",
+      interactionMode: "plan",
+      workflow: "iterative",
+      branch: null,
+      worktreePath: null,
+      latestTurn: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      archivedAt: null,
+      session: null,
+    };
+    const thread = yield* decodeOrchestrationThread({
+      ...common,
+      deletedAt: null,
+      messages: [],
+      proposedPlans: [],
+      activities: [],
+      checkpoints: [],
+    });
+    const shell = yield* decodeOrchestrationThreadShell({
+      ...common,
+      latestUserMessageAt: null,
+      hasPendingApprovals: false,
+      hasPendingUserInput: false,
+      hasActionableProposedPlan: false,
+    });
+
+    assert.strictEqual(thread.workflow, "iterative");
+    assert.strictEqual(shell.workflow, "iterative");
+  }),
+);
+
+it.effect("encodes paused plan snapshots for older clients and restores the canonical mode", () =>
+  Effect.gen(function* () {
+    const common = {
+      id: ThreadId.make("thread-plan-paused"),
+      projectId: ProjectId.make("project-1"),
+      title: "Paused plan",
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("omp"),
+        model: "fixture/model",
+      },
+      runtimeMode: "full-access" as const,
+      interactionMode: "plan-paused" as const,
+      branch: null,
+      worktreePath: null,
+      latestTurn: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      archivedAt: null,
+      settledOverride: null,
+      settledAt: null,
+      session: null,
+    };
+    const encodedThread = yield* encodeOrchestrationThread({
+      ...common,
+      deletedAt: null,
+      messages: [],
+      proposedPlans: [],
+      activities: [],
+      checkpoints: [],
+    });
+    const encodedShell = yield* encodeOrchestrationThreadShell({
+      ...common,
+      latestUserMessageAt: null,
+      hasPendingApprovals: false,
+      hasPendingUserInput: false,
+      hasActionableProposedPlan: false,
+    });
+
+    assert.strictEqual(encodedThread.interactionMode, "plan");
+    assert.strictEqual(encodedThread.planPaused, true);
+    assert.strictEqual(encodedShell.interactionMode, "plan");
+    assert.strictEqual(encodedShell.planPaused, true);
+    assert.strictEqual(
+      (yield* decodeOrchestrationThread(encodedThread)).interactionMode,
+      "plan-paused",
+    );
+    assert.strictEqual((yield* decodeLegacyThreadSnapshot(encodedThread)).interactionMode, "plan");
+    assert.strictEqual(
+      (yield* decodeOrchestrationThreadShell(encodedShell)).interactionMode,
+      "plan-paused",
+    );
   }),
 );
 
@@ -720,8 +924,22 @@ it.effect(
       assert.strictEqual(parsed.modelSelection, undefined);
       assert.strictEqual(parsed.runtimeMode, DEFAULT_RUNTIME_MODE);
       assert.strictEqual(parsed.interactionMode, DEFAULT_PROVIDER_INTERACTION_MODE);
+      assert.strictEqual(parsed.workflow, undefined);
       assert.strictEqual(parsed.sourceProposedPlan, undefined);
     }),
+);
+
+it.effect("decodes thread.turn-start-requested plan workflow when present", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeThreadTurnStartRequestedPayload({
+      threadId: "thread-workflow",
+      messageId: "msg-workflow",
+      interactionMode: "plan",
+      workflow: "iterative",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(parsed.workflow, "iterative");
+  }),
 );
 
 it.effect("decodes thread.turn-start-requested source proposed plan metadata when present", () =>
@@ -911,5 +1129,181 @@ it.effect("ModelSelection rejects malformed instance ids", () =>
       }),
     );
     assert.strictEqual(result._tag, "Failure");
+  }),
+);
+
+it.effect("normalizes legacy remote user-input responses during command decoding", () =>
+  Effect.gen(function* () {
+    const command = yield* decodeClientOrchestrationCommand({
+      type: "thread.user-input.respond",
+      commandId: "command-user-input-legacy",
+      threadId: "thread-1",
+      requestId: "ask-1",
+      answers: {
+        framework: "React",
+        targets: ["Web", "Mobile"],
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.deepStrictEqual(command, {
+      type: "thread.user-input.respond",
+      commandId: CommandId.make("command-user-input-legacy"),
+      threadId: ThreadId.make("thread-1"),
+      requestId: ApprovalRequestId.make("ask-1"),
+      response: {
+        kind: "submit",
+        answers: {
+          framework: { selectedOptions: ["React"] },
+          targets: { selectedOptions: ["Web", "Mobile"] },
+        },
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+  }),
+);
+
+it.effect("encodes submit user-input responses for legacy and current servers", () =>
+  Effect.gen(function* () {
+    const command = yield* decodeClientOrchestrationCommand({
+      type: "thread.user-input.respond",
+      commandId: "command-user-input-submit",
+      threadId: "thread-1",
+      requestId: "ask-1",
+      response: {
+        kind: "submit",
+        answers: {
+          framework: { selectedOptions: ["React"], note: "Use the stable release" },
+          targets: { selectedOptions: ["Web", "Mobile"], note: "Staged rollout" },
+          details: { selectedOptions: [], customInput: "Also deploy docs" },
+        },
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(command.type, "thread.user-input.respond");
+    if (command.type !== "thread.user-input.respond" || command.response.kind !== "submit") {
+      throw new Error("expected submitted user input command");
+    }
+    const encoded = yield* encodeClientOrchestrationCommand(command);
+
+    assert.deepStrictEqual(encoded, {
+      type: "thread.user-input.respond",
+      commandId: "command-user-input-submit",
+      threadId: "thread-1",
+      requestId: "ask-1",
+      response: command.response,
+      answers: {
+        framework: "React",
+        targets: ["Web", "Mobile"],
+        details: "Also deploy docs",
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    const legacyCommand = yield* decodeLegacyThreadUserInputRespondCommand(encoded);
+    assert.deepStrictEqual(legacyCommand.answers, {
+      framework: "React",
+      targets: ["Web", "Mobile"],
+      details: "Also deploy docs",
+    });
+    assert.deepStrictEqual(yield* decodeClientOrchestrationCommand(encoded), command);
+  }),
+);
+
+it.effect("encodes canonical user-input chat and cancel responses without legacy answers", () =>
+  Effect.gen(function* () {
+    const chat = yield* decodeClientOrchestrationCommand({
+      type: "thread.user-input.respond",
+      commandId: "command-user-input-chat",
+      threadId: "thread-1",
+      requestId: "ask-1",
+      response: { kind: "chat" },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const cancel = yield* decodeClientOrchestrationCommand({
+      type: "thread.user-input.respond",
+      commandId: "command-user-input-cancel",
+      threadId: "thread-1",
+      requestId: "ask-2",
+      response: { kind: "cancel" },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.deepStrictEqual(yield* encodeClientOrchestrationCommand(chat), {
+      type: "thread.user-input.respond",
+      commandId: "command-user-input-chat",
+      threadId: "thread-1",
+      requestId: "ask-1",
+      response: { kind: "chat" },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.deepStrictEqual(yield* encodeClientOrchestrationCommand(cancel), {
+      type: "thread.user-input.respond",
+      commandId: "command-user-input-cancel",
+      threadId: "thread-1",
+      requestId: "ask-2",
+      response: { kind: "cancel" },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+  }),
+);
+
+it.effect("decodes plan-paused workflow, follow-up delivery, and plan review commands", () =>
+  Effect.gen(function* () {
+    const interaction = yield* decodeClientOrchestrationCommand({
+      type: "thread.interaction-mode.set",
+      commandId: "command-plan-pause",
+      threadId: "thread-1",
+      interactionMode: "plan-paused",
+      workflow: "iterative",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const followUp = yield* decodeClientOrchestrationCommand({
+      type: "thread.turn.start",
+      commandId: "command-follow-up",
+      threadId: "thread-1",
+      message: {
+        messageId: "message-follow-up",
+        role: "user",
+        text: "Do this next",
+        attachments: [],
+      },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      deliveryMode: "follow-up",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const review = yield* decodeClientOrchestrationCommand({
+      type: "thread.plan-review.respond",
+      commandId: "command-plan-review",
+      threadId: "thread-1",
+      requestId: "plan-review-1",
+      decision: {
+        action: "execute",
+        context: "fresh",
+        executionModel: {
+          provider: "anthropic",
+          modelId: "claude-sonnet",
+          thinkingLevel: "high",
+        },
+        clientTurnId: "turn-plan-execute",
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.deepStrictEqual(interaction, {
+      type: "thread.interaction-mode.set",
+      commandId: CommandId.make("command-plan-pause"),
+      threadId: ThreadId.make("thread-1"),
+      interactionMode: "plan-paused",
+      workflow: "iterative",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(followUp.type, "thread.turn.start");
+    if (followUp.type !== "thread.turn.start") throw new Error("expected turn start");
+    assert.strictEqual(followUp.deliveryMode, "follow-up");
+    assert.strictEqual(review.type, "thread.plan-review.respond");
+    if (review.type !== "thread.plan-review.respond") throw new Error("expected plan review");
+    assert.strictEqual(review.decision.action, "execute");
   }),
 );

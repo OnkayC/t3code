@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { formatPendingPrimaryActionLabel } from "./ComposerPrimaryActions";
+import {
+  formatPendingPrimaryActionLabel,
+  shouldShowQueuedTurnSubmitAction,
+} from "./ComposerPrimaryActions";
 
 describe("formatPendingPrimaryActionLabel", () => {
   it("returns 'Submitting...' while responding", () => {
@@ -89,5 +92,38 @@ describe("formatPendingPrimaryActionLabel", () => {
         questionIndex: 5,
       }),
     ).toBe("Submit answers");
+  });
+});
+
+describe("shouldShowQueuedTurnSubmitAction", () => {
+  it("exposes a submit action only for a capable busy provider with sendable content", () => {
+    expect(
+      shouldShowQueuedTurnSubmitAction({
+        isRunning: true,
+        hasSendableContent: true,
+        supportsQueuedFollowUp: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldShowQueuedTurnSubmitAction({
+        isRunning: true,
+        hasSendableContent: true,
+        supportsQueuedFollowUp: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowQueuedTurnSubmitAction({
+        isRunning: true,
+        hasSendableContent: false,
+        supportsQueuedFollowUp: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowQueuedTurnSubmitAction({
+        isRunning: false,
+        hasSendableContent: true,
+        supportsQueuedFollowUp: true,
+      }),
+    ).toBe(false);
   });
 });
