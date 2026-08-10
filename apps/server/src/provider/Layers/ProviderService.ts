@@ -808,11 +808,14 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           );
         }
         const persistedBinding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+        // Persist layer stores SQL NULL as JS null; treat it as absent so
+        // adapters never see a "present but empty" resume cursor.
         const effectiveResumeCursor =
           input.resumeCursor ??
           (persistedBinding?.providerInstanceId === resolvedInstanceId
             ? persistedBinding.resumeCursor
-            : undefined);
+            : undefined) ??
+          undefined;
         const effectiveCwd =
           input.cwd ??
           (persistedBinding?.providerInstanceId === resolvedInstanceId

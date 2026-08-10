@@ -19,6 +19,7 @@ import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shar
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
@@ -1123,6 +1124,47 @@ const make = Effect.gen(function* () {
       ...(input.title !== undefined ? { title: input.title } : {}),
     });
   });
+  const settleOrphanedRunningSessions = Effect.fn("settleOrphanedRunningSessions")(function* () {
+    const [readModel, activeSessions] = yield* Effect.all([
+      projectionSnapshotQuery.getCommandReadModel(),
+      providerService.listSessions(),
+    ]);
+    const activeThreadIds = new Set(activeSessions.map((session) => session.threadId));
+    const orphanedThreads = readModel.threads.filter(
+      (thread) =>
+        (thread.session?.status === "starting" || thread.session?.status === "running") &&
+        !activeThreadIds.has(thread.id),
+    );
+
+    yield* Effect.forEach(
+      orphanedThreads,
+      (thread) =>
+        Effect.gen(function* () {
+          const updatedAt = DateTime.formatIso(yield* DateTime.now);
+          yield* providerService.stopSession({ threadId: thread.id }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("failed to stop orphaned provider session during startup", {
+                threadId: thread.id,
+                cause: Cause.pretty(cause),
+              }),
+            ),
+          );
+          yield* setThreadSession({
+            threadId: thread.id,
+            session: {
+              ...thread.session!,
+              status: "stopped",
+              activeTurnId: null,
+              lastError: "Server restarted before the active provider turn settled.",
+              updatedAt,
+            },
+            createdAt: updatedAt,
+          });
+        }),
+      { discard: true },
+    );
+  });
+
   const findInterruptedThreadTitleRegenerations = Effect.fn(
     "findInterruptedThreadTitleRegenerations",
   )(function* () {
@@ -1825,11 +1867,25 @@ const make = Effect.gen(function* () {
         );
       }),
     );
+    const settleOrphaned = settleOrphanedRunningSessions().pipe(
+      Effect.catchCause((cause) => {
+        if (Cause.hasInterruptsOnly(cause)) {
+          return Effect.interrupt;
+        }
+        return Effect.logWarning("provider command reactor failed to settle orphaned sessions", {
+          cause: Cause.pretty(cause),
+        });
+      }),
+    );
+    const startupReconciliation = Effect.all([clearInterrupted, settleOrphaned], {
+      concurrency: "unbounded",
+      discard: true,
+    });
     const activation = yield* ServerActivation;
     if (activation === undefined) {
-      yield* clearInterrupted;
+      yield* startupReconciliation;
     } else {
-      yield* forkParked(clearInterrupted);
+      yield* forkParked(startupReconciliation);
     }
   });
 
