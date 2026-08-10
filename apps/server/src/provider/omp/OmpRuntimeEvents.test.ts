@@ -131,6 +131,26 @@ describe("OmpRuntimeEvents", () => {
     });
   });
 
+  it("does not project streamed tool-call arguments as assistant text", () => {
+    const normalizer = makeNormalizer();
+    normalizer.map({
+      type: "message_start",
+      message: { role: "assistant" },
+    });
+
+    const events = normalizer.map({
+      type: "message_update",
+      message: { role: "assistant" },
+      assistantMessageEvent: {
+        type: "toolcall_delta",
+        contentIndex: 0,
+        delta: '{"command":"rm -rf .terraform"}',
+      },
+    });
+
+    expect(events).toEqual([]);
+  });
+
   it("normalizes structured approvals with exact public decisions and redacted raw payload", () => {
     const [event] = makeNormalizer().map({
       type: "approval_request",
