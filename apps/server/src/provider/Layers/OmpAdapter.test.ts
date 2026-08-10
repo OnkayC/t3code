@@ -694,6 +694,44 @@ it.effect("recovers empty sessions when a resume cursor points at a missing lazy
   );
 });
 
+it.effect("treats null and foreign resume cursors as no resume", () => {
+  const runtimeFactory = makeSetupRuntimeFactory();
+  return withAdapter(
+    ({ adapter }) =>
+      Effect.gen(function* () {
+        const nullSession = yield* adapter.startSession({
+          threadId: ThreadId.make("thread-null-resume"),
+          provider: ProviderDriverKind.make("omp"),
+          providerInstanceId: ProviderInstanceId.make("omp_work"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          // Persisted bindings store SQL NULL as JS null after a lazy start.
+          resumeCursor: null,
+        });
+        expect(nullSession.status).toBe("ready");
+        expect(yield* adapter.hasSession(ThreadId.make("thread-null-resume"))).toBe(true);
+
+        yield* adapter.stopSession(ThreadId.make("thread-null-resume"));
+
+        const foreignSession = yield* adapter.startSession({
+          threadId: ThreadId.make("thread-foreign-resume"),
+          provider: ProviderDriverKind.make("omp"),
+          providerInstanceId: ProviderInstanceId.make("omp_work"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          // e.g. leftover codex/claude shape or incomplete OMP cursor.
+          resumeCursor: { opaque: "not-an-omp-cursor" },
+        });
+        expect(foreignSession.status).toBe("ready");
+        expect(yield* adapter.hasSession(ThreadId.make("thread-foreign-resume"))).toBe(true);
+
+        const launchArgs = runtimeFactory.factory.mock.calls.flatMap((call) => call[0]?.args ?? []);
+        expect(launchArgs).not.toContain("--resume");
+      }),
+    { makeRuntime: runtimeFactory.factory },
+  );
+});
+
 it.effect("timestamps normalized events when each frame arrives", () => {
   let tick = 0;
   return withAdapter(

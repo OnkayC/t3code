@@ -157,6 +157,7 @@ describe("ProviderCommandReactor", () => {
     ) => Effect.Effect<ProviderSession, ProviderAdapterRequestError>;
     readonly setInteractionModeEffect?: ProviderServiceShape["setInteractionMode"];
     readonly stopSessionEffect?: ProviderServiceShape["stopSession"];
+    readonly orphanedRunningSessionBeforeStart?: boolean;
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -458,6 +459,43 @@ describe("ProviderCommandReactor", () => {
         createdAt: now,
       }),
     );
+    if (input?.orphanedRunningSessionBeforeStart === true) {
+      const orphanedTurnId = asTurnId("turn-orphaned-before-reactor-start");
+      await Effect.runPromise(
+        engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-orphaned-before-reactor-start"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("user-message-orphaned-before-reactor-start"),
+            role: "user",
+            text: "work interrupted by server restart",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      );
+      await Effect.runPromise(
+        engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-session-orphaned-before-reactor-start"),
+          threadId: ThreadId.make("thread-1"),
+          session: {
+            threadId: ThreadId.make("thread-1"),
+            status: "running",
+            providerName: "codex",
+            providerInstanceId: modelSelection.instanceId,
+            runtimeMode: "approval-required",
+            activeTurnId: orphanedTurnId,
+            lastError: null,
+            updatedAt: now,
+          },
+          createdAt: now,
+        }),
+      );
+    }
     if (input?.titleRegenerationBeforeStart === "two") {
       await Effect.runPromise(
         engine.dispatch({
@@ -522,6 +560,24 @@ describe("ProviderCommandReactor", () => {
       },
     };
   }
+
+  it("settles orphaned running sessions when the reactor starts", async () => {
+    const harness = await createHarness({ orphanedRunningSessionBeforeStart: true });
+
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      return thread?.session?.status === "stopped" && thread.session.activeTurnId === null;
+    });
+
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(thread?.session).toMatchObject({
+      status: "stopped",
+      activeTurnId: null,
+      lastError: "Server restarted before the active provider turn settled.",
+    });
+  });
 
   it("starts the first OMP turn with the selected plan workflow", async () => {
     const harness = await createHarness({
