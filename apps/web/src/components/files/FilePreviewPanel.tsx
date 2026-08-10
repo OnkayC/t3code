@@ -26,6 +26,8 @@ import { getLocalStorageItem, setLocalStorageItem, useLocalStorage } from "~/hoo
 import { DIFF_SURFACE_THEME_UNSAFE_CSS, resolveDiffThemeName } from "~/lib/diffRendering";
 import { cn } from "~/lib/utils";
 import { isPreviewSupportedInRuntime } from "~/previewStateStore";
+import { pickUniqueWorkspacePathSuffixMatch } from "~/filePathResolution";
+import { useProjectPathSearch } from "~/state/queries";
 import { resolvePathLinkTarget } from "~/terminal-links";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Toggle } from "~/components/ui/toggle";
@@ -780,6 +782,36 @@ export default function FilePreviewPanel({
   });
   const isImage = relativePath !== null && isWorkspaceImagePreviewPath(relativePath);
   const file = useProjectFileQuery(environmentId, cwd, relativePath, !isImage);
+  // Agent summaries often cite cwd-relative paths (e.g. tools/oke-stg/foo.yaml
+  // while working under flux/oke-flux/). Markdown auto-links resolve those
+  // against the project root, so the first open misses. When the read fails,
+  // recover by picking the unique workspace path that ends with that suffix.
+  const shouldResolveMissingPath =
+    relativePath !== null && file.error !== null && file.data === null;
+  const pathRecoverySearch = useProjectPathSearch(
+    {
+      environmentId: shouldResolveMissingPath ? environmentId : null,
+      cwd: shouldResolveMissingPath ? cwd : null,
+      query: shouldResolveMissingPath ? relativePath : null,
+      kind: "file",
+    },
+    20,
+  );
+  const recoveredRelativePath = useMemo(() => {
+    if (!shouldResolveMissingPath || relativePath === null || pathRecoverySearch.isPending) {
+      return null;
+    }
+    return pickUniqueWorkspacePathSuffixMatch(relativePath, pathRecoverySearch.entries);
+  }, [
+    pathRecoverySearch.entries,
+    pathRecoverySearch.isPending,
+    relativePath,
+    shouldResolveMissingPath,
+  ]);
+  useEffect(() => {
+    if (recoveredRelativePath === null) return;
+    onOpenFile(recoveredRelativePath);
+  }, [onOpenFile, recoveredRelativePath]);
   const [explorerOpen, setExplorerOpen] = useState(initialExplorerOpen);
   // Reading markdown rendered is a preference, not a property of one file. Keeping
   // it on the panel meant a thread switch dropped it and forced source back.
@@ -988,7 +1020,11 @@ export default function FilePreviewPanel({
               absolutePath={absolutePath}
               alt={relativePath}
             />
-          ) : relativePath && file.error && file.data === null ? (
+          ) : relativePath &&
+            file.error &&
+            file.data === null &&
+            !pathRecoverySearch.isPending &&
+            recoveredRelativePath === null ? (
             <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center text-xs leading-relaxed text-destructive">
               {file.error}
             </div>
