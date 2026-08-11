@@ -25,7 +25,7 @@ Install the standalone CLI archive from GitHub Releases:
 mise use -g "github:pingdotgg/t3code[matching=t3-cli]@latest"
 ```
 
-Release archives are available for macOS arm64/x64, Linux x64, and Windows x64. For a prerelease or fork, use that repository and enable prerelease discovery, for example:
+Release archives are available for macOS arm64/x64 and Linux x64. For a prerelease or fork, use that repository and enable prerelease discovery, for example:
 
 ```bash
 mise use -g "github:OWNER/REPOSITORY[matching=t3-cli,prerelease=true]@VERSION"

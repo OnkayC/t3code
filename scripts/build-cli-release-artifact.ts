@@ -113,6 +113,18 @@ export function cliReleaseRootName(
 ): string {
   return cliReleaseArchiveName(version, platform, arch).slice(0, -".tar.gz".length);
 }
+export function cliReleaseTarPlan(
+  archiveName: string,
+  rootName: string,
+): {
+  readonly createArgs: readonly string[];
+  readonly extractArgs: readonly string[];
+} {
+  return {
+    createArgs: ["-czf", archiveName, rootName],
+    extractArgs: ["-xzf", archiveName, "-C", "verify"],
+  };
+}
 
 export function renderUnixCliLauncher(): string {
   return `#!/bin/sh
@@ -323,17 +335,17 @@ function buildCliReleaseArtifact(
   );
 
   const temporaryRoot = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3code-cli-release-"));
-  const extractionRoot = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3code-cli-verify-"));
+  const extractionRoot = NodePath.join(temporaryRoot, "verify");
   const rootName = cliReleaseRootName(options.version, options.platform, options.arch);
   const releaseRoot = NodePath.join(temporaryRoot, rootName);
   const appRoot = NodePath.join(releaseRoot, "lib/t3");
   const stagedServerDist = NodePath.join(appRoot, "apps/server/dist");
   const nodeRuntimeDir = NodePath.join(releaseRoot, "lib/node");
   const outputDir = NodePath.resolve(repoRoot, options.outputDir);
-  const archivePath = NodePath.join(
-    outputDir,
-    cliReleaseArchiveName(options.version, options.platform, options.arch),
-  );
+  const archiveName = cliReleaseArchiveName(options.version, options.platform, options.arch);
+  const temporaryArchivePath = NodePath.join(temporaryRoot, archiveName);
+  const archivePath = NodePath.join(outputDir, archiveName);
+  const tarPlan = cliReleaseTarPlan(archiveName, rootName);
 
   try {
     NodeFS.mkdirSync(NodePath.join(releaseRoot, "bin"), { recursive: true });
@@ -415,13 +427,15 @@ function buildCliReleaseArtifact(
 
     NodeFS.mkdirSync(outputDir, { recursive: true });
     NodeFS.rmSync(archivePath, { force: true });
-    runChecked("tar", ["-czf", archivePath, "-C", temporaryRoot, rootName], {
-      cwd: repoRoot,
+    runChecked("tar", tarPlan.createArgs, {
+      cwd: temporaryRoot,
       encoding: "utf8",
     });
+    NodeFS.copyFileSync(temporaryArchivePath, archivePath);
 
-    runChecked("tar", ["-xzf", archivePath, "-C", extractionRoot], {
-      cwd: repoRoot,
+    NodeFS.mkdirSync(extractionRoot);
+    runChecked("tar", tarPlan.extractArgs, {
+      cwd: temporaryRoot,
       encoding: "utf8",
     });
     verifyPackagedCliVersion(
@@ -434,7 +448,6 @@ function buildCliReleaseArtifact(
     return archivePath;
   } finally {
     NodeFS.rmSync(temporaryRoot, { recursive: true, force: true });
-    NodeFS.rmSync(extractionRoot, { recursive: true, force: true });
   }
 }
 
