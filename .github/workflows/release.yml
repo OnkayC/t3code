@@ -328,7 +328,7 @@ jobs:
     needs: [preflight, relay_public_config, build_wsl_node_pty]
     if: ${{ !cancelled() && needs.preflight.result == 'success' && (github.repository_owner == 'OnkayC' || needs.relay_public_config.result == 'success') }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 40
     env:
       T3CODE_CLERK_PUBLISHABLE_KEY: ${{ needs.relay_public_config.outputs.clerk_publishable_key }}
       T3CODE_CLERK_JWT_TEMPLATE: ${{ needs.relay_public_config.outputs.clerk_jwt_template }}
@@ -649,6 +649,21 @@ jobs:
           target_dir="resource-monitor-publish/${{ matrix.resource_key }}"
           mkdir -p "$target_dir"
           cp "$source_path" "$target_dir/$binary_name"
+      - name: Build Mise CLI artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary_name="t3-resource-monitor"
+          if [[ "${{ matrix.platform }}" == "win" ]]; then
+            binary_name="${binary_name}.exe"
+          fi
+
+          node scripts/build-cli-release-artifact.ts \
+            --version "${{ needs.preflight.outputs.version }}" \
+            --platform "${{ matrix.platform }}" \
+            --arch "${{ matrix.arch }}" \
+            --resource-monitor "native/resource-monitor/target/${{ matrix.rust_target }}/release/${binary_name}" \
+            --output-dir cli-release-publish
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
@@ -662,6 +677,12 @@ jobs:
         with:
           name: resource-monitor-${{ matrix.resource_key }}
           path: resource-monitor-publish/${{ matrix.resource_key }}/*
+          if-no-files-found: error
+      - name: Upload Mise CLI artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: cli-${{ matrix.platform }}-${{ matrix.arch }}
+          path: cli-release-publish/t3-cli-*.tar.gz
           if-no-files-found: error
 
   publish_cli:
@@ -776,6 +797,12 @@ jobs:
           pattern: desktop-*
           merge-multiple: true
           path: release-assets
+      - name: Download all CLI artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: cli-*
+          merge-multiple: true
+          path: release-assets
 
       - name: Merge macOS updater manifests
         run: |
@@ -835,6 +862,7 @@ jobs:
             release-assets/*.exe
             release-assets/*.blockmap
             release-assets/*.yml
+            release-assets/t3-cli-*.tar.gz
           fail_on_unmatched_files: true
           token: ${{ github.token }}
 
@@ -855,8 +883,38 @@ jobs:
             release-assets/*.exe
             release-assets/*.blockmap
             release-assets/*.yml
+            release-assets/t3-cli-*.tar.gz
           fail_on_unmatched_files: true
           token: ${{ github.token }}
+
+  verify_mise_cli:
+    name: Verify CLI installation with Mise
+    needs: [preflight, release]
+    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.release.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Setup Mise
+        uses: jdx/mise-action@v4
+        with:
+          install: false
+          cache: false
+
+      - name: Install released CLI
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          mise use -g "github:${GITHUB_REPOSITORY}[matching=t3-cli,prerelease=true]@${RELEASE_VERSION}"
+          actual="$(t3 --version)"
+          expected="t3 v${RELEASE_VERSION}"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "Expected '$expected', got '$actual'." >&2
+            exit 1
+          fi
 
   deploy_web:
     name: Deploy hosted web app
