@@ -2,6 +2,7 @@ import { assert, it } from "@effect/vitest";
 
 import {
   cliReleaseArchiveName,
+  cliReleaseTarPlan,
   cliStageInstallProcess,
   cliReleaseResourceKey,
   cliReleaseRootName,
@@ -60,6 +61,15 @@ it("creates a private production dependency stage", () => {
 it("runs the staged install through the Windows command shell", () => {
   assert.deepStrictEqual(cliStageInstallProcess("win32"), { command: "vp", shell: true });
   assert.deepStrictEqual(cliStageInstallProcess("darwin"), { command: "vp", shell: false });
+});
+it("keeps tar archive operands relative on Windows", () => {
+  assert.deepStrictEqual(
+    cliReleaseTarPlan("t3-cli-0.0.33-omp-windows-x64.tar.gz", "t3-cli-0.0.33-omp-windows-x64"),
+    {
+      createArgs: ["-czf", "t3-cli-0.0.33-omp-windows-x64.tar.gz", "t3-cli-0.0.33-omp-windows-x64"],
+      extractArgs: ["-xzf", "t3-cli-0.0.33-omp-windows-x64.tar.gz", "-C", "verify"],
+    },
+  );
 });
 
 it("parses the release workflow CLI contract", () => {

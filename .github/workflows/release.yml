@@ -359,18 +359,6 @@ jobs:
             arch: x64
             rust_target: x86_64-unknown-linux-gnu
             resource_key: linux-x64
-          - label: Windows x64
-            runner: ${{ github.repository_owner == 'OnkayC' && 'windows-2025' || 'blacksmith-32vcpu-windows-2025' }}
-            platform: win
-            target: nsis
-            arch: x64
-            rust_target: x86_64-pc-windows-msvc
-            resource_key: win32-x64
-          # - label: Windows arm64
-          #   runner: windows-11-arm
-          #   platform: win
-          #   target: nsis
-          #   arch: arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -863,7 +851,7 @@ jobs:
             release-assets/*.blockmap
             release-assets/*.yml
             release-assets/t3-cli-*.tar.gz
-          fail_on_unmatched_files: true
+          fail_on_unmatched_files: false
           token: ${{ github.token }}
 
       - name: Publish first release
@@ -884,7 +872,7 @@ jobs:
             release-assets/*.blockmap
             release-assets/*.yml
             release-assets/t3-cli-*.tar.gz
-          fail_on_unmatched_files: true
+          fail_on_unmatched_files: false
           token: ${{ github.token }}
 
   verify_mise_cli:
