@@ -54,14 +54,18 @@ const ICON_SOURCE_FILES = [
   "src/index.html",
 ] as const;
 
-// Matches <link ...> tags or object-like icon metadata where rel/href can appear in any order.
-// The tag pattern is anchored on `<link`, so it only starts at real candidates. Object metadata
-// is matched by scanning brace-free runs instead of by one combined pattern: an unanchored
-// pattern restarts at every offset and rescans forward, which is quadratic on large sources.
+// Matches <link ...> tags or direct object properties where rel/href can appear in any order.
+// Object properties are collected per balanced brace frame so nested values stay attached to
+// their containing icon object without repeatedly rescanning large source files.
 const LINK_ICON_HTML_RE =
   /<link\b(?=[^>]*\brel=["'](?:icon|shortcut icon)["'])(?=[^>]*\bhref=["']([^"'?]+))[^>]*>/i;
-const ICON_REL_RE = /\brel\s*:\s*["'](?:icon|shortcut icon)["']/i;
-const ICON_HREF_RE = /\bhref\s*:\s*["']([^"'?]+)/i;
+const ICON_REL_PROPERTY_RE = /\brel\s*:\s*["'](?:icon|shortcut icon)["']/iy;
+const ICON_HREF_PROPERTY_RE = /\bhref\s*:\s*["']([^"'?]+)["']/iy;
+
+interface IconObjectFrame {
+  hasIconRel: boolean;
+  href: string | null;
+}
 
 export class ProjectFaviconResolutionError extends Schema.TaggedErrorClass<ProjectFaviconResolutionError>()(
   "ProjectFaviconResolutionError",
@@ -99,17 +103,68 @@ export class ProjectFaviconResolver extends Context.Service<
   }
 >()("t3/project/ProjectFaviconResolver") {}
 
+function skipQuotedSource(source: string, start: number, quote: string): number {
+  for (let index = start + 1; index < source.length; index += 1) {
+    if (source[index] === "\\") {
+      index += 1;
+      continue;
+    }
+    if (source[index] === quote) return index;
+  }
+  return source.length - 1;
+}
+
+function extractObjectIconHref(source: string): string | null {
+  const frames: IconObjectFrame[] = [];
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === '"' || character === "'" || character === "`") {
+      index = skipQuotedSource(source, index, character);
+      continue;
+    }
+    if (character === "/" && source[index + 1] === "/") {
+      const lineEnd = source.indexOf("\n", index + 2);
+      index = lineEnd === -1 ? source.length - 1 : lineEnd;
+      continue;
+    }
+    if (character === "/" && source[index + 1] === "*") {
+      const commentEnd = source.indexOf("*/", index + 2);
+      index = commentEnd === -1 ? source.length - 1 : commentEnd + 1;
+      continue;
+    }
+    if (character === "{") {
+      frames.push({ hasIconRel: false, href: null });
+      continue;
+    }
+    if (character === "}") {
+      const frame = frames.pop();
+      if (frame?.hasIconRel && frame.href !== null) return frame.href;
+      continue;
+    }
+
+    const frame = frames[frames.length - 1];
+    if (frame === undefined) continue;
+    ICON_REL_PROPERTY_RE.lastIndex = index;
+    const relMatch = ICON_REL_PROPERTY_RE.exec(source);
+    if (relMatch !== null) {
+      frame.hasIconRel = true;
+      index = ICON_REL_PROPERTY_RE.lastIndex - 1;
+      continue;
+    }
+    ICON_HREF_PROPERTY_RE.lastIndex = index;
+    const hrefMatch = ICON_HREF_PROPERTY_RE.exec(source);
+    if (hrefMatch !== null) {
+      frame.href = hrefMatch[1] ?? null;
+      index = ICON_HREF_PROPERTY_RE.lastIndex - 1;
+    }
+  }
+  return null;
+}
+
 function extractIconHref(source: string): string | null {
   const htmlMatch = source.match(LINK_ICON_HTML_RE);
   if (htmlMatch?.[1]) return htmlMatch[1];
-  // Icon metadata counts when `rel` and `href` share a brace-free run, so a run holding `rel`
-  // but no href falls through to the next one rather than ending the search.
-  for (const run of source.split("}")) {
-    if (!ICON_REL_RE.test(run)) continue;
-    const hrefMatch = run.match(ICON_HREF_RE);
-    if (hrefMatch?.[1]) return hrefMatch[1];
-  }
-  return null;
+  return extractObjectIconHref(source);
 }
 
 const optionOnNotFound = <A, R>(

@@ -203,14 +203,14 @@ it.layer(TestLayer)("ProjectFaviconResolverLive", (it) => {
       }),
     );
 
-    it.effect("resolves object-literal icon metadata alongside nested objects", () =>
+    it.effect("resolves icon metadata with a nested property between rel and href", () =>
       Effect.gen(function* () {
         const resolver = yield* ProjectFaviconResolver.ProjectFaviconResolver;
         const cwd = yield* makeTempDir;
         yield* writeTextFile(
           cwd,
           "src/root.tsx",
-          `const links = [{ attributes: {}, rel: "icon", href: "/brand/logo.svg" }];`,
+          `const links = [{ rel: "icon", attributes: { sizes: "any" }, href: "/brand/logo.svg" }];`,
         );
         yield* writeTextFile(cwd, "public/brand/logo.svg", "<svg>brand</svg>");
 

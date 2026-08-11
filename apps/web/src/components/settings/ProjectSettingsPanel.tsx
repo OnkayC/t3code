@@ -160,6 +160,13 @@ export function ProjectSettingsPage({ projectKey }: { projectKey: string }) {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
       if (event.key !== "Escape") return;
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)
+      ) {
+        return;
+      }
       event.preventDefault();
       const activeElement = document.activeElement;
       if (activeElement instanceof HTMLElement) {

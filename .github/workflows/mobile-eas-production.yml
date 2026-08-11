@@ -169,10 +169,17 @@ jobs:
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
+          set -euo pipefail
           failed=0
-          version="$(npx expo config --json --type public | jq -r '.version')"
+          version="$(
+            npx expo config --json --type public |
+              jq -er '.version | select(type == "string" and length > 0)'
+          )"
           for platform in ios android; do
-            latest="$(eas build:list --platform "$platform" --build-profile production --limit 1 --json --non-interactive | jq -r '.[0].appVersion // "none"')"
+            latest="$(
+              eas build:list --platform "$platform" --build-profile production --limit 1 --json --non-interactive |
+                jq -er 'if length == 0 then "none" else .[0].appVersion | select(type == "string" and length > 0) end'
+            )"
             if [ "$latest" = "$version" ]; then
               echo "$platform: production build for $version already exists (or is in progress)"
               continue

@@ -15,6 +15,25 @@ const CURRENCY = new Intl.NumberFormat("en-US", {
 
 const INTEGER = new Intl.NumberFormat("en-US");
 
+const TOKEN_UNIT_PROMOTION_THRESHOLD = 999.5;
+
+const MONTHS = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+] as const;
+
+const CALENDAR_DAY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
 export function formatUsd(value: number): string {
   return CURRENCY.format(value);
 }
@@ -29,9 +48,9 @@ export function formatCount(value: number): string {
  */
 export function formatTokens(value: number): string {
   const abs = Math.abs(value);
-  if (abs >= 1e12) return `${trim(value / 1e12)}T`;
-  if (abs >= 1e9) return `${trim(value / 1e9)}B`;
-  if (abs >= 1e6) return `${trim(value / 1e6)}M`;
+  if (abs >= TOKEN_UNIT_PROMOTION_THRESHOLD * 1e9) return `${trim(value / 1e12)}T`;
+  if (abs >= TOKEN_UNIT_PROMOTION_THRESHOLD * 1e6) return `${trim(value / 1e9)}B`;
+  if (abs >= TOKEN_UNIT_PROMOTION_THRESHOLD * 1e3) return `${trim(value / 1e6)}M`;
   if (abs >= 1e3) return `${trim(value / 1e3)}K`;
   return INTEGER.format(Math.round(value));
 }
@@ -46,33 +65,40 @@ export function formatPercent(share: number, digits = 1): string {
   return `${(share * 100).toFixed(digits)}%`;
 }
 
+function parseCalendarDay(day: string): number | null {
+  const match = CALENDAR_DAY_RE.exec(day);
+  if (match === null) return null;
+  const [, yearText = "", monthText = "", dayText = ""] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const dayOfMonth = Number(dayText);
+  const timestamp = Date.parse(`${day}T00:00:00.000Z`);
+  if (Number.isNaN(timestamp)) return null;
+  const parsed = new Date(timestamp);
+  if (
+    parsed.getUTCFullYear() !== year ||
+    parsed.getUTCMonth() !== month - 1 ||
+    parsed.getUTCDate() !== dayOfMonth
+  ) {
+    return null;
+  }
+  return timestamp;
+}
+
 /** `2026-08-07` to `Aug 7`. */
 export function formatDayShort(day: string): string {
-  const [year, month, dayOfMonth] = day.split("-").map((part) => Number(part));
-  if (year === undefined || month === undefined || dayOfMonth === undefined) return day;
-  const MONTHS = [
-    "Jan",
-    "Feb",
-    "Mar",
-    "Apr",
-    "May",
-    "Jun",
-    "Jul",
-    "Aug",
-    "Sep",
-    "Oct",
-    "Nov",
-    "Dec",
-  ];
-  return `${MONTHS[month - 1] ?? ""} ${dayOfMonth}`;
+  const timestamp = parseCalendarDay(day);
+  if (timestamp === null) return day;
+  const parsed = new Date(timestamp);
+  return `${MONTHS[parsed.getUTCMonth()] ?? ""} ${parsed.getUTCDate()}`;
 }
 
 /** Inclusive day list between two `YYYY-MM-DD` bounds. */
 export function enumerateDays(sinceDay: string, untilDay: string): readonly string[] {
   const days: string[] = [];
-  const start = Date.parse(`${sinceDay}T00:00:00Z`);
-  const end = Date.parse(`${untilDay}T00:00:00Z`);
-  if (Number.isNaN(start) || Number.isNaN(end) || end < start) return days;
+  const start = parseCalendarDay(sinceDay);
+  const end = parseCalendarDay(untilDay);
+  if (start === null || end === null || end < start) return days;
 
   for (let cursor = start; cursor <= end; cursor += 86_400_000) {
     days.push(new Date(cursor).toISOString().slice(0, 10));

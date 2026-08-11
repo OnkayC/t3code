@@ -365,6 +365,7 @@ function ProcessSignalActions({
           render={
             <button
               type="button"
+              aria-label={`Send SIGINT to process ${process.pid}`}
               disabled={isSignaling}
               className="cursor-pointer text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:pointer-events-none disabled:opacity-50"
               onClick={() => onSignal(process.pid, "SIGINT")}
@@ -380,6 +381,7 @@ function ProcessSignalActions({
           render={
             <button
               type="button"
+              aria-label={`Send SIGKILL to process ${process.pid}`}
               disabled={isSignaling}
               className="cursor-pointer text-[11px] font-medium text-destructive underline-offset-2 hover:underline disabled:pointer-events-none disabled:opacity-50"
               onClick={() => onSignal(process.pid, "SIGKILL")}
@@ -394,7 +396,7 @@ function ProcessSignalActions({
   );
 }
 
-function ProcessDiagnosticsTable({
+export function ProcessDiagnosticsTable({
   processes,
   signalingPid,
   onSignal,
@@ -510,7 +512,7 @@ function ProcessDiagnosticsTable({
               <td className="p-2 align-middle sm:pr-4">
                 <ProcessSignalActions
                   process={process}
-                  isSignaling={signalingPid === process.pid}
+                  isSignaling={signalingPid !== null}
                   onSignal={onSignal}
                 />
               </td>
