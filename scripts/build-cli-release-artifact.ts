@@ -143,6 +143,12 @@ export function createCliStagePackageJson(input: {
     dependencies: input.dependencies,
   };
 }
+export function cliStageInstallProcess(platform: NodeJS.Platform): {
+  readonly command: "vp";
+  readonly shell: boolean;
+} {
+  return { command: "vp", shell: platform === "win32" };
+}
 
 export function targetMatchesHost(input: {
   readonly platform: CliReleasePlatform;
@@ -378,9 +384,11 @@ function buildCliReleaseArtifact(
         `[cli-release] Installing production dependencies for ${options.platform}-${options.arch}.`,
       ),
     );
-    runChecked(hostRuntime.platform === "win32" ? "vp.cmd" : "vp", STAGE_INSTALL_ARGS, {
+    const installProcess = cliStageInstallProcess(hostRuntime.platform);
+    runChecked(installProcess.command, STAGE_INSTALL_ARGS, {
       cwd: appRoot,
       encoding: "utf8",
+      shell: installProcess.shell,
     });
     pruneBundledClaudeExecutables(NodePath.join(appRoot, "node_modules"));
 
