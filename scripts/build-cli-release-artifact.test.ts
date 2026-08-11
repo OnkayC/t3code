@@ -2,6 +2,7 @@ import { assert, it } from "@effect/vitest";
 
 import {
   cliReleaseArchiveName,
+  cliStageInstallProcess,
   cliReleaseResourceKey,
   cliReleaseRootName,
   createCliStagePackageJson,
@@ -55,6 +56,10 @@ it("creates a private production dependency stage", () => {
   assert.equal(stagePackage.version, "0.0.33-omp");
   assert.equal(stagePackage.private, true);
   assert.deepStrictEqual(stagePackage.dependencies, { effect: "4.0.0-beta.103" });
+});
+it("runs the staged install through the Windows command shell", () => {
+  assert.deepStrictEqual(cliStageInstallProcess("win32"), { command: "vp", shell: true });
+  assert.deepStrictEqual(cliStageInstallProcess("darwin"), { command: "vp", shell: false });
 });
 
 it("parses the release workflow CLI contract", () => {
