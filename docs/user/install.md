@@ -4,7 +4,7 @@ T3 Code is a web and desktop GUI for running coding agents on your machine.
 
 ## Requirements
 
-Node.js `^22.16 || ^23.11 || >=24.10` on the machine that runs the T3 Code server.
+Node.js `^22.16 || ^23.11 || >=24.10` on the machine that runs the T3 Code server when using the npm package. The Mise release archive includes its own Node.js runtime.
 
 At least one provider CLI, installed and authenticated. See [Providers](#providers) below.
 
@@ -16,6 +16,22 @@ npx t3@latest
 
 This starts the T3 Code server on your machine and opens the local web app. Use
 `npx t3@latest --help` for the full CLI reference.
+
+## Install the CLI with Mise
+
+Install the standalone CLI archive from GitHub Releases:
+
+```bash
+mise use -g "github:pingdotgg/t3code[matching=t3-cli]@latest"
+```
+
+Release archives are available for macOS arm64/x64, Linux x64, and Windows x64. For a prerelease or fork, use that repository and enable prerelease discovery, for example:
+
+```bash
+mise use -g "github:OWNER/REPOSITORY[matching=t3-cli,prerelease=true]@VERSION"
+```
+
+The installed `t3` command includes its runtime dependencies, but provider CLIs such as `codex`, `claude`, or `omp` still need to be installed separately.
 
 ## Desktop App
 
