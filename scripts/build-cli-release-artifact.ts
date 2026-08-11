@@ -7,6 +7,13 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
+import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
+import {
+  HostProcessArchitecture,
+  HostProcessArguments,
+  HostProcessExecutablePath,
+  HostProcessPlatform,
+} from "@t3tools/shared/hostProcess";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -40,11 +47,18 @@ const WorkspaceConfigSchema = Schema.Struct({
   patchedDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   allowBuilds: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
 });
+const decodeWorkspaceConfig = Schema.decodeUnknownSync(WorkspaceConfigSchema);
+
 interface WorkspaceConfig {
   readonly catalog: Record<string, string>;
   readonly overrides: Record<string, string>;
   readonly patchedDependencies: Record<string, string>;
   readonly allowBuilds: Record<string, boolean>;
+}
+interface CliReleaseHostRuntime {
+  readonly platform: NodeJS.Platform;
+  readonly arch: NodeJS.Architecture;
+  readonly executablePath: string;
 }
 
 interface CliStagePackageJson {
@@ -60,9 +74,7 @@ const repoRoot = NodePath.resolve(NodePath.dirname(NodeURL.fileURLToPath(import.
 
 function readWorkspaceConfig(): WorkspaceConfig {
   const workspacePath = NodePath.join(repoRoot, "pnpm-workspace.yaml");
-  const decoded = Schema.decodeUnknownSync(WorkspaceConfigSchema)(
-    parse(NodeFS.readFileSync(workspacePath, "utf8")),
-  );
+  const decoded = decodeWorkspaceConfig(parse(NodeFS.readFileSync(workspacePath, "utf8")));
 
   return {
     catalog: decoded.catalog ?? {},
@@ -253,17 +265,20 @@ function verifyPackagedCliVersion(
   }
 }
 
-function buildCliReleaseArtifact(options: CliReleaseOptions): string {
+function buildCliReleaseArtifact(
+  options: CliReleaseOptions,
+  hostRuntime: CliReleaseHostRuntime,
+): string {
   if (
     !targetMatchesHost({
       platform: options.platform,
       arch: options.arch,
-      hostPlatform: process.platform,
-      hostArch: process.arch,
+      hostPlatform: hostRuntime.platform,
+      hostArch: hostRuntime.arch,
     })
   ) {
     throw new Error(
-      `CLI release target ${options.platform}-${options.arch} does not match host ${process.platform}-${process.arch}.`,
+      `CLI release target ${options.platform}-${options.arch} does not match host ${hostRuntime.platform}-${hostRuntime.arch}.`,
     );
   }
 
@@ -363,13 +378,13 @@ function buildCliReleaseArtifact(options: CliReleaseOptions): string {
         `[cli-release] Installing production dependencies for ${options.platform}-${options.arch}.`,
       ),
     );
-    runChecked(process.platform === "win32" ? "vp.cmd" : "vp", STAGE_INSTALL_ARGS, {
+    runChecked(hostRuntime.platform === "win32" ? "vp.cmd" : "vp", STAGE_INSTALL_ARGS, {
       cwd: appRoot,
       encoding: "utf8",
     });
     pruneBundledClaudeExecutables(NodePath.join(appRoot, "node_modules"));
 
-    const nodeExecutablePath = NodeFS.realpathSync(process.execPath);
+    const nodeExecutablePath = NodeFS.realpathSync(hostRuntime.executablePath);
     const bundledNodeName = options.platform === "win" ? "node.exe" : "node";
     const bundledNodePath = NodePath.join(nodeRuntimeDir, bundledNodeName);
     NodeFS.copyFileSync(nodeExecutablePath, bundledNodePath);
@@ -416,5 +431,15 @@ function buildCliReleaseArtifact(options: CliReleaseOptions): string {
 }
 
 if (import.meta.main) {
-  buildCliReleaseArtifact(parseCliReleaseOptions(process.argv.slice(2)));
+  Effect.gen(function* () {
+    const platform = yield* HostProcessPlatform;
+    const arch = yield* HostProcessArchitecture;
+    const executablePath = yield* HostProcessExecutablePath;
+    const args = yield* HostProcessArguments;
+    buildCliReleaseArtifact(parseCliReleaseOptions(args.slice(2)), {
+      platform,
+      arch,
+      executablePath,
+    });
+  }).pipe(NodeRuntime.runMain);
 }
