@@ -55,6 +55,7 @@ import Migration0039 from "./Migrations/039_ProjectionWorkflowColumns.ts";
 import Migration0040 from "./Migrations/040_ProjectionPendingPlanReviewCount.ts";
 import Migration0041 from "./Migrations/041_ProjectionProjectsDefaultThreadEnvMode.ts";
 import Migration0042 from "./Migrations/042_ProjectionProjectFaviconPath.ts";
+import Migration0043 from "./Migrations/043_RepairUpstreamMigrationCollisions.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -109,6 +110,7 @@ export const migrationEntries = [
   [40, "ProjectionPendingPlanReviewCount", Migration0040],
   [41, "ProjectionProjectsDefaultThreadEnvMode", Migration0041],
   [42, "ProjectionProjectFaviconPath", Migration0042],
+  [43, "RepairUpstreamMigrationCollisions", Migration0043],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
