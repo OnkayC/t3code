@@ -101,6 +101,7 @@ jobs:
           run-install: true
 
       - name: Ensure Electron runtime is installed
+        if: github.repository_owner != 'OnkayC'
         run: vp run --filter @t3tools/desktop ensure:electron
 
       - id: release_meta
@@ -273,7 +274,7 @@ jobs:
   build_wsl_node_pty:
     name: Build WSL node-pty (linux-x64)
     needs: [preflight]
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' }}
+    if: ${{ github.repository_owner != 'OnkayC' && !failure() && !cancelled() && needs.preflight.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -362,6 +363,7 @@ jobs:
 
     steps:
       - name: Checkout
+        if: github.repository_owner != 'OnkayC' || matrix.platform == 'linux'
         uses: actions/checkout@v6
         with:
           ref: ${{ needs.preflight.outputs.ref }}
@@ -371,6 +373,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Setup Vite+
+        if: github.repository_owner != 'OnkayC' || matrix.platform == 'linux'
         uses: voidzero-dev/setup-vp@v1
         with:
           node-version-file: package.json
@@ -382,6 +385,7 @@ jobs:
               - --filter=@t3tools/scripts...
 
       - name: Setup Rust
+        if: github.repository_owner != 'OnkayC' || matrix.platform == 'linux'
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust_target }}
@@ -403,6 +407,7 @@ jobs:
           cat "$config_path" >> "$GITHUB_ENV"
 
       - name: Align package versions to release version
+        if: github.repository_owner != 'OnkayC' || matrix.platform == 'linux'
         run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
 
       - name: Download WSL node-pty prebuild
@@ -430,7 +435,7 @@ jobs:
           }
 
       - name: Install ImageMagick
-        if: matrix.platform == 'linux'
+        if: github.repository_owner != 'OnkayC' && matrix.platform == 'linux'
         shell: bash
         run: |
           if ! command -v magick >/dev/null 2>&1 && ! command -v convert >/dev/null 2>&1; then
@@ -507,6 +512,7 @@ jobs:
           "PSModulePath=$($modulePathEntries -join ';')" >> $env:GITHUB_ENV
 
       - name: Build desktop artifact
+        if: github.repository_owner != 'OnkayC'
         shell: bash
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -589,6 +595,7 @@ jobs:
           vp run dist:desktop:artifact "${args[@]}"
 
       - name: Collect release assets
+        if: github.repository_owner != 'OnkayC'
         shell: bash
         run: |
           set -euo pipefail
@@ -626,7 +633,16 @@ jobs:
           #   done
           # fi
 
+      - name: Build server bundle
+        if: github.repository_owner == 'OnkayC' && matrix.platform == 'linux'
+        run: vp run --filter t3 build
+
+      - name: Build resource monitor
+        if: github.repository_owner == 'OnkayC' && matrix.platform == 'linux'
+        run: cargo build --manifest-path native/resource-monitor/Cargo.toml --release --target "${{ matrix.rust_target }}"
+
       - name: Collect resource monitor
+        if: github.repository_owner != 'OnkayC' || matrix.platform == 'linux'
         shell: bash
         run: |
           set -euo pipefail
@@ -639,6 +655,7 @@ jobs:
           mkdir -p "$target_dir"
           cp "$source_path" "$target_dir/$binary_name"
       - name: Build Mise CLI artifact
+        if: github.repository_owner != 'OnkayC' || matrix.platform == 'linux'
         shell: bash
         run: |
           set -euo pipefail
@@ -655,6 +672,7 @@ jobs:
             --output-dir cli-release-publish
 
       - name: Upload build artifacts
+        if: github.repository_owner != 'OnkayC'
         uses: actions/upload-artifact@v7
         with:
           name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
@@ -662,12 +680,14 @@ jobs:
           if-no-files-found: error
 
       - name: Upload resource monitor
+        if: github.repository_owner != 'OnkayC' || matrix.platform == 'linux'
         uses: actions/upload-artifact@v7
         with:
           name: resource-monitor-${{ matrix.resource_key }}
           path: resource-monitor-publish/${{ matrix.resource_key }}/*
           if-no-files-found: error
       - name: Upload Mise CLI artifact
+        if: github.repository_owner != 'OnkayC' || matrix.platform == 'linux'
         uses: actions/upload-artifact@v7
         with:
           name: cli-${{ matrix.platform }}-${{ matrix.arch }}
@@ -781,6 +801,7 @@ jobs:
               - --filter=@t3tools/scripts...
 
       - name: Download all desktop artifacts
+        if: github.repository_owner != 'OnkayC'
         uses: actions/download-artifact@v8
         with:
           pattern: desktop-*
@@ -794,6 +815,7 @@ jobs:
           path: release-assets
 
       - name: Merge macOS updater manifests
+        if: github.repository_owner != 'OnkayC'
         run: |
           shopt -s nullglob
           for x64_manifest in release-assets/*-mac-x64.yml; do
