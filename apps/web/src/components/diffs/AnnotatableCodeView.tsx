@@ -6,7 +6,9 @@ import type {
   FileDiffMetadata,
   SelectedLineRange,
 } from "@pierre/diffs";
+/* oxlint-disable eslint/no-restricted-imports -- Fork main does not yet include the shared StyledDiffCodeView adapter. */
 import { CodeView, type CodeViewHandle, type CodeViewProps } from "@pierre/diffs/react";
+/* oxlint-enable eslint/no-restricted-imports */
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { useCallback, useMemo, useState, type ReactNode, type Ref } from "react";
 

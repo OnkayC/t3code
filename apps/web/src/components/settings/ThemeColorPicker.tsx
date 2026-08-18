@@ -462,7 +462,6 @@ function ThemeColorPicker({
             className="relative flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full border border-foreground/30 transition-transform hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             onFocus={onInteract}
             onPointerDown={onInteract}
-            title={`Choose ${label} color`}
             type="button"
           >
             <span
@@ -519,7 +518,6 @@ export const ThemeColorField = memo(function ThemeColorField({
         aria-pressed={selected}
         className="flex min-w-0 flex-1 cursor-pointer items-center rounded-md text-left text-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
         onClick={() => onToggleSelected?.(role)}
-        title={`${selected ? "Hide" : "Show"} where ${label} is used`}
         type="button"
       >
         <span className="min-w-0 flex-1 truncate">{label}</span>

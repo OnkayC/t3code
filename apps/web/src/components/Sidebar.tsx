@@ -502,7 +502,6 @@ const SidebarDraftRow = memo(function SidebarDraftRow(props: {
               <button
                 type="button"
                 aria-label="Discard draft"
-                title="Discard draft"
                 onClick={handleDiscard}
                 className="pointer-events-none inline-flex cursor-pointer items-center rounded-md bg-transparent px-1 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover/sidebar-row:pointer-events-auto group-hover/sidebar-row:opacity-100"
               >
@@ -1167,7 +1166,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                   <button
                     type="button"
                     aria-label="Dismiss Woke notification"
-                    title="Dismiss Woke notification"
                     onClick={handleAcknowledgeWokeClick}
                     className="inline-flex cursor-pointer items-center gap-1 rounded-sm text-xs font-medium text-amber-700 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring dark:text-amber-300"
                   >
@@ -1292,7 +1290,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                   <button
                     type="button"
                     aria-label="Unpin thread"
-                    title="Unpin thread"
                     onClick={handleUnpinClick}
                     className="inline-flex cursor-pointer items-center rounded-sm text-muted-foreground/65 outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
                   >
@@ -1328,7 +1325,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                       <button
                         type="button"
                         aria-label="Dismiss Woke notification"
-                        title="Dismiss Woke notification"
                         onClick={handleAcknowledgeWokeClick}
                         className={cn(
                           "inline-flex cursor-pointer items-center gap-1 rounded-sm font-medium outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring",
@@ -3302,7 +3298,6 @@ export default function Sidebar() {
                             <button
                               type="button"
                               aria-label={`Project settings for ${project.displayName}`}
-                              title={`Project settings for ${project.displayName}`}
                               className="ml-auto inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-icon-muted outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
                               onPointerDown={(event) => event.stopPropagation()}
                               onClick={(event) => {

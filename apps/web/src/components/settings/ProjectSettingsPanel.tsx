@@ -947,7 +947,6 @@ function ProjectDetail({ group }: { group: SidebarProjectSnapshot }) {
               <button
                 aria-label="Copy checkout path"
                 className="group flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-left outline-none hover:bg-accent/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-                title="Copy path"
                 type="button"
                 onClick={() =>
                   copyPathToClipboard(selectedCheckout.workspaceRoot, {

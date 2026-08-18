@@ -664,8 +664,6 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
     copyPairingValue(pairingLink.credential, "code");
   }, [copyPairingValue, pairingLink.credential]);
 
-  const expiresAbsolute = formatAccessTimestamp(pairingLink.expiresAt);
-
   const primaryLabel = pairingLink.label ?? "Pairing link";
   const selectedQrOption = selectQrEndpointOption(
     endpointCopyOptions,
@@ -692,7 +690,7 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
             />
             <h3 className="text-sm font-medium text-foreground">{primaryLabel}</h3>
           </div>
-          <p className="text-xs text-muted-foreground" title={expiresAbsolute}>
+          <p className="text-xs text-muted-foreground">
             {formatExpiresInLabel(pairingLink.expiresAt, nowMs)}
             <span aria-hidden> · </span>
             <AccessScopeSummary scopes={pairingLink.scopes} label="Pairing link scopes" />
@@ -840,10 +838,7 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
               </div>
             ) : null}
             <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-muted/30 px-2.5 py-1.5">
-              <code
-                title={qrPairingUrl}
-                className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground"
-              >
+              <code className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">
                 {qrPairingUrl}
               </code>
               <Button
@@ -1234,10 +1229,7 @@ const AdvertisedEndpointListRow = memo(function AdvertisedEndpointListRow({
             {endpoint.label}
           </h3>
           {shouldShowEndpointUrl ? (
-            <p
-              className="min-w-0 truncate text-xs leading-5 text-muted-foreground"
-              title={endpoint.httpBaseUrl}
-            >
+            <p className="min-w-0 truncate text-xs leading-5 text-muted-foreground">
               {endpoint.httpBaseUrl}
             </p>
           ) : null}
@@ -3311,10 +3303,7 @@ export function ConnectionsSettings() {
                 ) : null}
                 <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2">
                   <p className="text-xs font-medium text-muted-foreground">HTTPS endpoint</p>
-                  <p
-                    className="mt-1 truncate text-sm text-foreground"
-                    title={pendingTailscaleServeBaseUrl ?? undefined}
-                  >
+                  <p className="mt-1 truncate text-sm text-foreground">
                     {pendingTailscaleServeBaseUrl ?? "Pending MagicDNS endpoint"}
                   </p>
                 </div>

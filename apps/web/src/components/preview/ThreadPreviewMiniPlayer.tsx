@@ -302,7 +302,6 @@ export function ThreadPreviewMiniPlayer({ threadRef, tabId, bottomInset }: Props
         <button
           type="button"
           aria-label="Resize floating preview"
-          title="Resize floating preview"
           className="pointer-events-auto absolute bottom-0 right-0 z-[33] size-5 cursor-nwse-resize rounded-br-xl after:absolute after:bottom-1 after:right-1 after:size-2 after:border-b after:border-r after:border-foreground/45"
           onPointerDown={handleResizePointerDown}
           onPointerMove={handleResizePointerMove}
