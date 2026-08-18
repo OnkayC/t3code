@@ -490,47 +490,25 @@ describe("thread outbox", () => {
     ).toBe("send");
   });
 
-  it("sends a supported native follow-up while the thread is busy", () => {
-    const common = {
-      isCreation: false,
-      threadExists: true,
-      shellStatus: "live",
-      environmentConnected: true,
-      threadBusy: true,
-    } as const;
-
+  it("sends existing-thread messages whenever connected so queued messages can steer", () => {
     expect(
-      resolveThreadOutboxDeliveryDecision({
-        ...common,
-        provider: { supportedTurnDeliveryModes: ["steer", "follow-up"] },
-      }),
-    ).toEqual({ action: "send", deliveryMode: "follow-up" });
-    expect(
-      resolveThreadOutboxDeliveryDecision({
-        ...common,
-        provider: { supportedTurnDeliveryModes: ["steer"] },
-      }),
-    ).toEqual({
-      action: "wait",
-      deliveryMode: undefined,
-    });
-  });
-
-  it("waits instead of follow-up when a runtime-mode change would replace the active session", () => {
-    expect(
-      resolveThreadOutboxDeliveryDecision({
+      resolveThreadOutboxDeliveryAction({
         isCreation: false,
         threadExists: true,
         shellStatus: "live",
         environmentConnected: true,
         threadBusy: true,
-        provider: { supportedTurnDeliveryModes: ["steer", "follow-up"] },
-        wouldReplaceActiveSession: true,
       }),
-    ).toEqual({
-      action: "wait",
-      deliveryMode: undefined,
-    });
+    ).toBe("send");
+    expect(
+      resolveThreadOutboxDeliveryAction({
+        isCreation: false,
+        threadExists: true,
+        shellStatus: "live",
+        environmentConnected: false,
+        threadBusy: true,
+      }),
+    ).toBe("wait");
   });
 
   it("sends queued creations once connected and live, removing already-created ones", () => {

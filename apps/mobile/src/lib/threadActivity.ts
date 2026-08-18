@@ -48,9 +48,9 @@ export interface PendingUserInputDraftAnswer {
   readonly note?: string;
 }
 
-export interface PendingPlanReview extends PlanReviewRequestedPayload {
-  readonly requestId: ApprovalRequestId;
-  readonly createdAt: string;
+export interface PendingUserInputDraftAnswer {
+  readonly selectedOptionLabels?: ReadonlyArray<string>;
+  readonly customAnswer?: string;
 }
 
 export interface ThreadFeedActivity {
@@ -257,10 +257,32 @@ function normalizeDraftAnswer(value: string | undefined): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function selectedOptionLabels(
-  draft: PendingUserInputDraftAnswer | undefined,
+function normalizeSelectedOptionLabels(
+  value: ReadonlyArray<string> | undefined,
 ): ReadonlyArray<string> {
-  return draft?.selectedOptionLabels?.filter((label) => label.trim().length > 0) ?? [];
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return Array.from(
+    new Set(value.map((entry) => entry.trim()).filter((entry) => entry.length > 0)),
+  );
+}
+
+function resolvePendingUserInputAnswer(
+  question: UserInputQuestion,
+  draft: PendingUserInputDraftAnswer | undefined,
+): string | ReadonlyArray<string> | null {
+  const customAnswer = normalizeDraftAnswer(draft?.customAnswer);
+  if (customAnswer) {
+    return customAnswer;
+  }
+
+  const selectedOptionLabels = normalizeSelectedOptionLabels(draft?.selectedOptionLabels);
+  if (question.multiSelect) {
+    return selectedOptionLabels.length > 0 ? selectedOptionLabels : null;
+  }
+  return selectedOptionLabels[0] ?? null;
 }
 
 /** Codex children settle via task.updated (idle/failed/interrupted), never
@@ -1544,26 +1566,25 @@ export function setPendingUserInputCustomAnswer(
   draft: PendingUserInputDraftAnswer | undefined,
   customAnswer: string,
 ): PendingUserInputDraftAnswer {
-  // Non-blank custom answers clear option selections (web parity). Rebuild
-  // rather than spreading the whole draft so stale selectedOptionLabels /
-  // note keys do not linger incorrectly.
-  const selectedOptionLabelsNext =
-    customAnswer.trim().length > 0 ? undefined : selectedOptionLabels(draft);
-  const note = draft?.note;
+  const selectedOptionLabels =
+    customAnswer.trim().length > 0
+      ? undefined
+      : normalizeSelectedOptionLabels(draft?.selectedOptionLabels);
   return {
     customAnswer,
-    ...(selectedOptionLabelsNext && selectedOptionLabelsNext.length > 0
-      ? { selectedOptionLabels: [...selectedOptionLabelsNext] }
-      : {}),
-    ...(note !== undefined ? { note } : {}),
+    ...(selectedOptionLabels && selectedOptionLabels.length > 0 ? { selectedOptionLabels } : {}),
   };
 }
 
-export function setPendingUserInputNote(
+export function isPendingUserInputOptionSelected(
   draft: PendingUserInputDraftAnswer | undefined,
-  note: string,
-): PendingUserInputDraftAnswer {
-  return { ...draft, note };
+  optionLabel: string,
+): boolean {
+  if (normalizeDraftAnswer(draft?.customAnswer)) {
+    return false;
+  }
+
+  return normalizeSelectedOptionLabels(draft?.selectedOptionLabels).includes(optionLabel.trim());
 }
 
 export function togglePendingUserInputOptionSelection(
@@ -1571,45 +1592,40 @@ export function togglePendingUserInputOptionSelection(
   draft: PendingUserInputDraftAnswer | undefined,
   optionLabel: string,
 ): PendingUserInputDraftAnswer {
-  const note = draft?.note;
+  const normalizedOptionLabel = optionLabel.trim();
+
   if (question.multiSelect) {
-    const current = selectedOptionLabels(draft);
-    const next = current.includes(optionLabel)
-      ? current.filter((label) => label !== optionLabel)
-      : [...current, optionLabel];
+    const selectedOptionLabels = normalizeSelectedOptionLabels(draft?.selectedOptionLabels);
+    const nextSelectedOptionLabels = selectedOptionLabels.includes(normalizedOptionLabel)
+      ? selectedOptionLabels.filter((label) => label !== normalizedOptionLabel)
+      : [...selectedOptionLabels, normalizedOptionLabel];
+
     return {
       customAnswer: "",
-      ...(next.length > 0 ? { selectedOptionLabels: [...next] } : {}),
-      ...(note !== undefined ? { note } : {}),
+      ...(nextSelectedOptionLabels.length > 0
+        ? { selectedOptionLabels: nextSelectedOptionLabels }
+        : {}),
     };
   }
+
   return {
     customAnswer: "",
-    selectedOptionLabels: [optionLabel],
-    ...(note !== undefined ? { note } : {}),
+    selectedOptionLabels: [normalizedOptionLabel],
   };
 }
 
 export function buildPendingUserInputAnswers(
   questions: ReadonlyArray<UserInputQuestion>,
   draftAnswers: Record<string, PendingUserInputDraftAnswer>,
-  supportsNote: boolean = true,
-): Record<string, ProviderUserInputAnswer> | null {
-  const answers: Record<string, ProviderUserInputAnswer> = {};
+): Record<string, string | ReadonlyArray<string>> | null {
+  const answers: Record<string, string | ReadonlyArray<string>> = {};
 
   for (const question of questions) {
-    const draft = draftAnswers[question.id];
-    // Custom free-text is only accepted when the question allows it (default true).
-    const customInput =
-      question.allowCustom !== false ? normalizeDraftAnswer(draft?.customAnswer) : null;
-    const selectedOptions = customInput ? [] : [...selectedOptionLabels(draft)];
-    if (selectedOptions.length === 0 && !customInput) return null;
-    const note = supportsNote ? normalizeDraftAnswer(draft?.note) : null;
-    answers[question.id] = {
-      selectedOptions,
-      ...(customInput ? { customInput } : {}),
-      ...(note ? { note } : {}),
-    };
+    const answer = resolvePendingUserInputAnswer(question, draftAnswers[question.id]);
+    if (!answer) {
+      return null;
+    }
+    answers[question.id] = answer;
   }
 
   return answers;

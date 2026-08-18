@@ -38,7 +38,7 @@ import {
   type QueuedThreadMessage,
   type ThreadOutboxCommandStage,
 } from "./thread-outbox-model";
-import { environmentThreadShells, threadEnvironment } from "./threads";
+import { threadEnvironment } from "./threads";
 import { useAtomCommand } from "./use-atom-command";
 import {
   editingQueuedMessageIdsAtom,
@@ -391,51 +391,14 @@ export function useThreadOutboxDrain(): void {
           // Rolled back by a failed write; nothing to deliver or retry.
           return true;
         }
-        // The guards evaluated before the confirmation await are stale by now.
-        // Re-read the edit lock and thread, then resolve queue capability again
-        // so a newly busy supported provider receives a native follow-up while
-        // unsupported providers continue waiting for idle.
+        // The guards evaluated before the confirmation await are stale by now:
+        // the user may have opened this message in the editor. Re-read that
+        // guard and defer to the next drain pass (returning true skips the
+        // failure/backoff path) rather than sending a payload being edited.
         if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[nextQueuedMessage.messageId]) {
           return true;
         }
-        const freshThread = findThread(
-          appAtomRegistry.get(environmentThreadShells.threadShellsAtom),
-          nextQueuedMessage,
-        );
-        const freshThreadBusy =
-          freshThread?.session?.status === "running" || freshThread?.session?.status === "starting";
-        const freshWouldReplaceActiveSession =
-          freshThread !== undefined &&
-          nextQueuedMessage.runtimeMode !== undefined &&
-          nextQueuedMessage.runtimeMode !== freshThread.runtimeMode;
-        const freshQueuedProviderInstanceId = (
-          nextQueuedMessage.modelSelection ?? freshThread?.modelSelection
-        )?.instanceId;
-        const freshActiveProviderInstanceId =
-          freshThread?.session?.providerInstanceId ?? freshThread?.modelSelection.instanceId;
-        const freshProvider =
-          freshQueuedProviderInstanceId !== undefined &&
-          freshQueuedProviderInstanceId === freshActiveProviderInstanceId
-            ? serverConfigs
-                .get(nextQueuedMessage.environmentId)
-                ?.providers.find(
-                  (provider) => provider.instanceId === freshQueuedProviderInstanceId,
-                )
-            : undefined;
-        const freshDeliveryDecision = resolveThreadOutboxDeliveryDecision({
-          isCreation: creation !== undefined,
-          threadExists: freshThread !== undefined,
-          shellStatus,
-          environmentConnected: environment?.connectionState === "connected",
-          threadBusy: freshThreadBusy,
-          provider: freshProvider,
-          wouldReplaceActiveSession: freshWouldReplaceActiveSession,
-        });
-        const freshDeliveryAction = freshDeliveryDecision.action;
-        if (freshDeliveryAction === "wait") {
-          return true;
-        }
-        return freshDeliveryAction === "remove"
+        return deliveryAction === "remove"
           ? removeQueuedMessage("[thread-outbox] failed to remove message for a missing thread")
           : creation !== undefined
             ? creationProjectCwd !== null

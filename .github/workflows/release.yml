@@ -359,6 +359,7 @@ jobs:
             arch: x64
             rust_target: x86_64-unknown-linux-gnu
             resource_key: linux-x64
+
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -875,6 +876,15 @@ jobs:
           fail_on_unmatched_files: false
           token: ${{ github.token }}
 
+  publish_aur:
+    name: Publish AUR package
+    needs: [preflight, release]
+    if: ${{ github.repository_owner != 'OnkayC' && !failure() && !cancelled() && needs.preflight.result == 'success' && needs.release.result == 'success' }}
+    uses: ./.github/workflows/publish-aur.yml
+    with:
+      release_tag: ${{ needs.preflight.outputs.tag }}
+    secrets:
+      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
   verify_mise_cli:
     name: Verify CLI installation with Mise
     needs: [preflight, release]
