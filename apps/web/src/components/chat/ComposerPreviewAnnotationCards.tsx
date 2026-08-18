@@ -16,7 +16,10 @@ interface ComposerPreviewAnnotationCardsProps {
 
 function TargetStat(props: { icon: ReactNode; count: number; label: string }) {
   return (
-    <span className="inline-flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
+    <span
+      aria-label={`${props.count} ${props.label}${props.count === 1 ? "" : "s"}`}
+      className="inline-flex items-center gap-1 text-[10px] font-medium text-muted-foreground"
+    >
       {props.icon}
       {props.count}
     </span>
