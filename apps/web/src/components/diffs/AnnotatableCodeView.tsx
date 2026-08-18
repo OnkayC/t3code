@@ -6,7 +6,7 @@ import type {
   FileDiffMetadata,
   SelectedLineRange,
 } from "@pierre/diffs";
-import type { CodeViewHandle } from "@pierre/diffs/react";
+import { CodeView, type CodeViewHandle, type CodeViewProps } from "@pierre/diffs/react";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { useCallback, useMemo, useState, type ReactNode, type Ref } from "react";
 
@@ -18,9 +18,8 @@ import {
   type ReviewCommentContext,
 } from "~/reviewCommentContext";
 
+import { LocalCommentAnnotation } from "../files/LocalCommentAnnotation";
 import { nextFileCommentId } from "../files/fileCommentAnnotations";
-import { DiffCommentAnnotation } from "./DiffCommentAnnotation";
-import { StyledDiffCodeView, type StyledDiffCodeViewOptions } from "./StyledDiffCodeView";
 
 interface DiffCommentAnnotationEntry {
   id: string;
@@ -82,7 +81,7 @@ interface AnnotatableCodeViewProps {
   sectionId: string;
   sectionTitle: string;
   composerDraftTarget: ScopedThreadRef | DraftId;
-  options: StyledDiffCodeViewOptions<DiffCommentAnnotationGroup>;
+  options: NonNullable<CodeViewProps<DiffCommentAnnotationGroup>["options"]>;
   viewerRef?: Ref<AnnotatableCodeViewHandle>;
   className?: string;
   renderHeaderPrefix: (
@@ -238,9 +237,9 @@ export function AnnotatableCodeView({
 
   const hasOpenComment = draft !== null;
   return (
-    <StyledDiffCodeView<DiffCommentAnnotationGroup>
+    <CodeView<DiffCommentAnnotationGroup>
       key={codeViewKey}
-      {...(viewerRef ? { viewerRef } : {})}
+      {...(viewerRef ? { ref: viewerRef } : {})}
       {...(className ? { className } : {})}
       items={items}
       selectedLines={selectedLines}
@@ -263,7 +262,7 @@ export function AnnotatableCodeView({
             className={hasDraft ? "py-1" : "divide-y divide-border/30 border-y border-border/30"}
           >
             {annotation.metadata.entries.map((entry) => (
-              <DiffCommentAnnotation
+              <LocalCommentAnnotation
                 key={entry.id}
                 kind={entry.kind}
                 rangeLabel={entry.rangeLabel}

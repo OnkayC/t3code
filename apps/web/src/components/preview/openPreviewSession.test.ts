@@ -1,9 +1,4 @@
-import {
-  FILL_PREVIEW_VIEWPORT,
-  type PreviewOpenInput,
-  type PreviewSessionSnapshot,
-  type ScopedThreadRef,
-} from "@t3tools/contracts";
+import type { PreviewOpenInput, PreviewSessionSnapshot, ScopedThreadRef } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -46,10 +41,7 @@ describe("openPreviewSession", () => {
       threadRef,
     });
 
-    expect(open).toHaveBeenCalledWith({
-      threadId: "thread-1",
-      viewport: FILL_PREVIEW_VIEWPORT,
-    });
+    expect(open).toHaveBeenCalledWith({ threadId: "thread-1" });
     expect(readThreadPreviewState(threadRef).snapshot).toEqual(idleSnapshot);
     expect(readThreadPreviewState(threadRef).recentlySeenUrls).toEqual([]);
   });
@@ -63,11 +55,7 @@ describe("openPreviewSession", () => {
       url: "t3.chat",
     });
 
-    expect(open).toHaveBeenCalledWith({
-      threadId: "thread-1",
-      url: "t3.chat",
-      viewport: FILL_PREVIEW_VIEWPORT,
-    });
+    expect(open).toHaveBeenCalledWith({ threadId: "thread-1", url: "t3.chat" });
     expect(readThreadPreviewState(threadRef).snapshot).toEqual(snapshot);
     expect(readThreadPreviewState(threadRef).recentlySeenUrls).toEqual(["https://t3.chat/"]);
   });

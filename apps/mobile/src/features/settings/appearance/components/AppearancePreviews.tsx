@@ -1,4 +1,11 @@
-import { Platform, ScrollView, type StyleProp, type TextStyle, View } from "react-native";
+import {
+  Platform,
+  ScrollView,
+  type StyleProp,
+  type TextStyle,
+  View,
+  useColorScheme,
+} from "react-native";
 
 import { AppText as Text } from "../../../../components/AppText";
 import {
@@ -6,8 +13,7 @@ import {
   resolveMobileCodeSurface,
 } from "../../../../lib/appearancePreferences";
 import { useThemeColor } from "../../../../lib/useThemeColor";
-import { getMobileTerminalTheme } from "../../../terminal/terminalTheme";
-import { useAppearancePreferences } from "../AppearancePreferencesProvider";
+import { getPierreTerminalTheme } from "../../../terminal/terminalTheme";
 
 const CODE_FONT_FAMILY = Platform.select({
   ios: "ui-monospace",
@@ -47,8 +53,8 @@ export function TextAppearancePreview(props: { readonly fontSize: number }) {
  * on the shared card background so it reads like the other previews.
  */
 export function TerminalAppearancePreview(props: { readonly fontSize: number }) {
-  const { themeAppearance: scheme, themeId } = useAppearancePreferences();
-  const theme = getMobileTerminalTheme(themeId, scheme);
+  const scheme = useColorScheme() === "light" ? "light" : "dark";
+  const theme = getPierreTerminalTheme(scheme);
   const lineHeight = Math.round(props.fontSize * 1.6);
   const lineStyle = {
     fontFamily: "Menlo",

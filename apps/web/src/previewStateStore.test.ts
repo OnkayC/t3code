@@ -322,7 +322,6 @@ describe("previewStateStore (single-tab)", () => {
       pictureInPicture: false,
       colorScheme: "system",
       controller: "none",
-      favicon: null,
     });
     const state = readThreadPreviewState(ref);
     expect(state.desktopOverlay?.canGoBack).toBe(true);
@@ -343,7 +342,6 @@ describe("previewStateStore (single-tab)", () => {
       pictureInPicture: false,
       colorScheme: "system",
       controller: "none",
-      favicon: null,
     });
     setActivePreviewTab(ref, first.tabId);
 
@@ -392,7 +390,6 @@ describe("previewStateStore (single-tab)", () => {
       pictureInPicture: false,
       colorScheme: "system",
       controller: "none",
-      favicon: null,
     });
 
     reconcilePreviewServerSessions(ref, { sessions: [active], serverEpoch, revision: 1 });
@@ -507,7 +504,6 @@ describe("previewStateStore (single-tab)", () => {
       pictureInPicture: false,
       colorScheme: "system",
       controller: "none",
-      favicon: null,
     });
     const restarted = makeSnapshot({
       navStatus: { _tag: "Success", url: "https://new.example", title: "New" },

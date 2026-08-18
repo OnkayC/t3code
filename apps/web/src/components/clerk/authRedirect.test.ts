@@ -5,10 +5,7 @@ import { resolveClerkSignInProps } from "./authRedirect";
 describe("resolveClerkSignInProps", () => {
   it("returns to the current browser URL on the web", () => {
     const href = "https://app.t3.codes/connect?state=state-1#details";
-    expect(resolveClerkSignInProps(href, false)).toEqual({
-      forceRedirectUrl: href,
-      signUpForceRedirectUrl: href,
-    });
+    expect(resolveClerkSignInProps(href, false)).toEqual({ forceRedirectUrl: href });
   });
 
   it("removes a Clerk virtual pathname and callback params while preserving the desktop route", () => {

@@ -43,7 +43,7 @@ import {
   commitBrowserViewportChange,
   subscribeBrowserViewportChange,
 } from "~/browser/browserViewportActions";
-import { browserResponsiveViewportForToggle, useBrowserDefaults } from "~/browser/browserDefaults";
+import { resolveResponsiveBrowserViewportSize } from "~/browser/browserViewportLayout";
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 import { PreviewUnreachable } from "./PreviewUnreachable";
 import { revealInFileExplorerLabel } from "./fileExplorerLabel";
@@ -144,7 +144,6 @@ export function PreviewView({
   const controller = desktopOverlay?.controller ?? "none";
   const loadProgress = useLoadingProgress(loading);
   const viewport = snapshot?.viewport ?? FILL_PREVIEW_VIEWPORT;
-  const browserDefaults = useBrowserDefaults();
   const panelRect = useBrowserSurfaceStore((state) =>
     runtimeTabId ? (state.byTabId[runtimeTabId]?.rect ?? null) : null,
   );
@@ -250,14 +249,12 @@ export function PreviewView({
       return;
     }
 
-    void commitBrowserViewportChange(
-      runtimeTabId,
-      browserResponsiveViewportForToggle({
-        defaults: browserDefaults,
-        panelRect,
-        zoomFactor: desktopOverlay?.zoomFactor,
-      }),
-    ).catch(() => undefined);
+    const responsiveSize = panelRect
+      ? resolveResponsiveBrowserViewportSize(panelRect, desktopOverlay?.zoomFactor)
+      : { width: 1024, height: 768 };
+    void commitBrowserViewportChange(runtimeTabId, { _tag: "freeform", ...responsiveSize }).catch(
+      () => undefined,
+    );
   };
 
   useEffect(() => {
@@ -713,9 +710,9 @@ export function PreviewView({
         ) : null}
         {showEmptyState ? (
           <PreviewEmptyState
-            threadRef={threadRef}
             environmentId={threadRef.environmentId}
             configuredUrls={configuredUrls}
+            recentlySeenUrls={previewState.recentlySeenUrls}
             recentEntries={recentHistoryEntries}
             onRemoveRecent={(url) => removeUrlForThread(threadRef, url)}
             onOpenUrl={(next) => void handleOpenServerUrl(next)}

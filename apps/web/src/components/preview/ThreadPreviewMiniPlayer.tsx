@@ -2,13 +2,12 @@
 
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { PanelRightIcon, PictureInPicture2, XIcon } from "lucide-react";
-import { type PointerEvent as ReactPointerEvent, useLayoutEffect, useRef, useState } from "react";
+import { type PointerEvent as ReactPointerEvent, useLayoutEffect, useRef } from "react";
 
 import { BrowserSurfaceSlot } from "~/browser/BrowserSurfaceSlot";
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 import { Button } from "~/components/ui/button";
 import { toastManager } from "~/components/ui/toast";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { useThreadPreviewState } from "~/previewStateStore";
 import { selectThreadPreviewMiniPlayer, usePreviewMiniPlayerStore } from "~/previewMiniPlayerStore";
 import { useRightPanelStore } from "~/rightPanelStore";
@@ -18,7 +17,6 @@ import {
   clampPreviewMiniPlayerPosition,
   clampPreviewMiniPlayerSize,
   PREVIEW_MINI_PLAYER_DEFAULT_SIZE,
-  PREVIEW_MINI_PLAYER_EDGE_GAP,
 } from "./previewMiniPlayerLayout";
 
 interface DragState {
@@ -33,8 +31,6 @@ interface ResizeState {
   readonly pointerId: number;
   readonly pointerX: number;
   readonly pointerY: number;
-  readonly playerX: number;
-  readonly playerY: number;
   readonly width: number;
   readonly height: number;
 }
@@ -49,7 +45,6 @@ export function ThreadPreviewMiniPlayer({ threadRef, tabId, bottomInset }: Props
   const rootRef = useRef<HTMLElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const resizeRef = useRef<ResizeState | null>(null);
-  const [defaultLayoutVersion, setDefaultLayoutVersion] = useState("");
   const miniPlayer = usePreviewMiniPlayerStore((state) =>
     selectThreadPreviewMiniPlayer(state.byThreadKey, threadRef),
   );
@@ -96,12 +91,8 @@ export function ThreadPreviewMiniPlayer({ threadRef, tabId, bottomInset }: Props
         bottomInset,
       );
       usePreviewMiniPlayerStore.getState().resize(threadRef, tabId, nextSize);
-      if (!position) {
-        setDefaultLayoutVersion(`${parent.clientWidth}:${parent.clientHeight}`);
-        return;
-      }
       const next = clampPreviewMiniPlayerPosition(
-        position,
+        position ?? { x: root.offsetLeft, y: root.offsetTop },
         { width: parent.clientWidth, height: parent.clientHeight },
         nextSize,
         bottomInset,
@@ -168,16 +159,11 @@ export function ThreadPreviewMiniPlayer({ threadRef, tabId, bottomInset }: Props
   const handleResizePointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
     if (event.button !== 0) return;
     const root = rootRef.current;
-    const parent = root?.offsetParent;
-    if (!root || !(parent instanceof HTMLElement)) return;
-    const rootRect = root.getBoundingClientRect();
-    const parentRect = parent.getBoundingClientRect();
+    if (!root) return;
     resizeRef.current = {
       pointerId: event.pointerId,
       pointerX: event.clientX,
       pointerY: event.clientY,
-      playerX: rootRect.left - parentRect.left,
-      playerY: rootRect.top - parentRect.top,
       width: root.offsetWidth,
       height: root.offsetHeight,
     };
@@ -208,7 +194,7 @@ export function ThreadPreviewMiniPlayer({ threadRef, tabId, bottomInset }: Props
     );
     usePreviewMiniPlayerStore.getState().resize(threadRef, tabId, nextSize);
     const nextPosition = clampPreviewMiniPlayerPosition(
-      { x: resize.playerX, y: resize.playerY },
+      position ?? { x: root.offsetLeft, y: root.offsetTop },
       { width: parent.clientWidth, height: parent.clientHeight },
       nextSize,
       bottomInset,
@@ -236,8 +222,8 @@ export function ThreadPreviewMiniPlayer({ threadRef, tabId, bottomInset }: Props
         position
           ? { left: position.x, top: position.y, width: size.width, height: size.height }
           : {
-              right: PREVIEW_MINI_PLAYER_EDGE_GAP,
-              top: PREVIEW_MINI_PLAYER_EDGE_GAP,
+              right: 16,
+              top: 16,
               width: size.width,
               height: size.height,
             }
@@ -255,63 +241,45 @@ export function ThreadPreviewMiniPlayer({ threadRef, tabId, bottomInset }: Props
           onPointerUp={endDrag}
           onPointerCancel={endDrag}
         >
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  aria-label="Open preview in right panel"
-                  onPointerDown={(event) => event.stopPropagation()}
-                  onClick={openInPanel}
-                />
-              }
-            >
-              <PanelRightIcon />
-            </TooltipTrigger>
-            <TooltipPopup side="top">Open in right panel</TooltipPopup>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  variant={desktopOverlay?.pictureInPicture ? "secondary" : "ghost"}
-                  size="icon-xs"
-                  aria-label={
-                    desktopOverlay?.pictureInPicture
-                      ? "Close popped-out preview"
-                      : "Pop preview into separate window"
-                  }
-                  disabled={!desktopOverlay?.hasWebContents}
-                  onPointerDown={(event) => event.stopPropagation()}
-                  onClick={toggleNativePictureInPicture}
-                />
-              }
-            >
-              <PictureInPicture2 />
-            </TooltipTrigger>
-            <TooltipPopup side="top">
-              {desktopOverlay?.pictureInPicture
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label="Open preview in right panel"
+            title="Open in right panel"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={openInPanel}
+          >
+            <PanelRightIcon />
+          </Button>
+          <Button
+            variant={desktopOverlay?.pictureInPicture ? "secondary" : "ghost"}
+            size="icon-xs"
+            aria-label={
+              desktopOverlay?.pictureInPicture
+                ? "Close popped-out preview"
+                : "Pop preview into separate window"
+            }
+            title={
+              desktopOverlay?.pictureInPicture
                 ? "Close separate window"
-                : "Pop into separate window"}
-            </TooltipPopup>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  aria-label="Close floating preview"
-                  onPointerDown={(event) => event.stopPropagation()}
-                  onClick={close}
-                />
-              }
-            >
-              <XIcon />
-            </TooltipTrigger>
-            <TooltipPopup side="top">Close floating preview</TooltipPopup>
-          </Tooltip>
+                : "Pop into separate window"
+            }
+            disabled={!desktopOverlay?.hasWebContents}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={toggleNativePictureInPicture}
+          >
+            <PictureInPicture2 />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label="Close floating preview"
+            title="Close floating preview"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={close}
+          >
+            <XIcon />
+          </Button>
         </div>
       </div>
 
@@ -322,11 +290,7 @@ export function ThreadPreviewMiniPlayer({ threadRef, tabId, bottomInset }: Props
           visible={Boolean(desktopOverlay?.hasWebContents)}
           cornerRadius={12}
           fitSourceContent
-          layoutVersion={
-            position
-              ? `${position.x}:${position.y}`
-              : `initial:${bottomInset}:${defaultLayoutVersion}`
-          }
+          layoutVersion={position ? `${position.x}:${position.y}` : `initial:${bottomInset}`}
           className="absolute inset-0"
         />
         <div className="pointer-events-none absolute inset-0 z-[31] rounded-xl ring-1 ring-inset ring-border/80" />
@@ -338,6 +302,7 @@ export function ThreadPreviewMiniPlayer({ threadRef, tabId, bottomInset }: Props
         <button
           type="button"
           aria-label="Resize floating preview"
+          title="Resize floating preview"
           className="pointer-events-auto absolute bottom-0 right-0 z-[33] size-5 cursor-nwse-resize rounded-br-xl after:absolute after:bottom-1 after:right-1 after:size-2 after:border-b after:border-r after:border-foreground/45"
           onPointerDown={handleResizePointerDown}
           onPointerMove={handleResizePointerMove}

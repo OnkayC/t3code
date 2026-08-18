@@ -2,7 +2,6 @@ import {
   createVividThemeColors,
   getThemeModes,
   parseThemeFile,
-  themeColorToHex,
   THEME_FILE_VERSION,
   type ThemeAppearance,
   type ThemeColorRole,
@@ -139,7 +138,7 @@ function contrastRatio(first: VsCodeRgb, second: VsCodeRgb): number {
 }
 
 function hexToRgb(value: string): VsCodeRgb {
-  return parseVsCodeColor(themeColorToHex(value) ?? value) ?? { r: 0, g: 0, b: 0, a: 1 };
+  return parseVsCodeColor(value) ?? { r: 0, g: 0, b: 0, a: 1 };
 }
 
 /**
@@ -337,9 +336,6 @@ export function parseVsCodeThemeFile(value: unknown): ThemeDefinition {
  */
 export function pairVsCodeThemes(
   themes: ReadonlyArray<ThemeDefinition>,
-  options?: {
-    pairedId?: (light: ThemeDefinition, dark: ThemeDefinition) => string;
-  },
 ): ReadonlyArray<ThemeDefinition> {
   const stripAppearance = (label: string) =>
     label
@@ -375,7 +371,6 @@ export function pairVsCodeThemes(
           order: group.order,
           theme: parseThemeFile({
             version: THEME_FILE_VERSION,
-            ...(options?.pairedId ? { id: options.pairedId(group.light[0]!, group.dark[0]!) } : {}),
             name: key,
             appearance: "light",
             colors: group.light[0]!.colors,

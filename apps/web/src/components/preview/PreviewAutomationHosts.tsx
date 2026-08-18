@@ -38,7 +38,6 @@ import {
 } from "~/browser/browserRecording";
 import { resolveBrowserRecordingStopTarget } from "~/browser/browserRecordingScope";
 import { useBrowserSurfaceStore } from "~/browser/browserSurfaceStore";
-import { browserDefaultOpenViewport, resolveBrowserDefaults } from "~/browser/browserDefaults";
 import { runBrowserViewportMutation } from "~/browser/browserViewportActions";
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 import { isElectron } from "~/env";
@@ -381,9 +380,6 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 input: {
                   threadId: request.threadId,
                   ...(resolvedInputUrl ? { url: resolvedInputUrl } : {}),
-                  // An agent that didn't state a size gets the user's
-                  // configured default, same as a hand-opened tab.
-                  viewport: browserDefaultOpenViewport(await resolveBrowserDefaults()),
                 },
               });
               if (result._tag === "Failure") {
@@ -432,10 +428,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 updatePreviewServerSnapshot(threadRef, resizeResult.value);
               }
             }
-            const shouldPresentPreview = shouldOpenPreviewMiniPlayer(
-              input,
-              (await resolveBrowserDefaults()).autoShowFloatingPreview,
-            );
+            const shouldPresentPreview = shouldOpenPreviewMiniPlayer(input);
             if (shouldPresentPreview) {
               usePreviewMiniPlayerStore.getState().open(threadRef, activeTabId);
             }

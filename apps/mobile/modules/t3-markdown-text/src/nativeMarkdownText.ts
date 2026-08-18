@@ -70,22 +70,15 @@ const EMPTY_CONTEXT: RunContext = {
 
 const INLINE_HTML_TAG_PATTERN = /<\/?(?:kbd|mark|sub|sup|u)(?:\s[^>]*)?>/gi;
 
-function decodeCodePoint(codePoint: number, entity: string): string {
-  if (!Number.isInteger(codePoint) || codePoint < 0 || codePoint > 0x10ffff) {
-    return entity;
-  }
-  return String.fromCodePoint(codePoint);
-}
-
 function decodeHtmlEntitiesOnce(value: string): string {
   return value.replace(
     /&(?:#(\d+)|#x([0-9a-f]+)|amp|apos|gt|lt|nbsp|quot);/gi,
     (entity, decimal: string | undefined, hexadecimal: string | undefined) => {
       if (decimal) {
-        return decodeCodePoint(Number.parseInt(decimal, 10), entity);
+        return String.fromCodePoint(Number.parseInt(decimal, 10));
       }
       if (hexadecimal) {
-        return decodeCodePoint(Number.parseInt(hexadecimal, 16), entity);
+        return String.fromCodePoint(Number.parseInt(hexadecimal, 16));
       }
       switch (entity.toLowerCase()) {
         case "&amp;":
@@ -668,7 +661,6 @@ function appendDocumentBlock(
 function containsRichBlock(node: MarkdownNode): boolean {
   if (
     node.type === "code_block" ||
-    node.type === "blockquote" ||
     node.type === "table" ||
     node.type === "image" ||
     node.type === "horizontal_rule" ||

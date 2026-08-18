@@ -16,7 +16,7 @@ import {
   getTriggerDisplayModelLabel,
   getTriggerDisplayModelName,
 } from "./providerIconUtils";
-import { shouldShowInstanceBadge, type ProviderInstanceEntry } from "../../providerInstances";
+import type { ProviderInstanceEntry } from "../../providerInstances";
 import { ComposerControl, ComposerControlChevron } from "./ComposerControl";
 
 export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
@@ -67,8 +67,10 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     selectedInstanceOptions[0];
   const triggerTitle = selectedModel ? getTriggerDisplayModelName(selectedModel) : props.model;
   const triggerLabel = selectedModel ? getTriggerDisplayModelLabel(selectedModel) : props.model;
-  const showInstanceBadge =
-    activeEntry !== null && shouldShowInstanceBadge(activeEntry, props.instanceEntries);
+  const duplicateDriverCount = props.instanceEntries.filter(
+    (entry) => activeEntry !== null && entry.driverKind === activeEntry.driverKind,
+  ).length;
+  const showInstanceBadge = Boolean(activeEntry?.accentColor) || duplicateDriverCount > 1;
 
   const setIsMenuOpen = (open: boolean) => {
     props.onOpenChange?.(open);

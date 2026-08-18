@@ -48,10 +48,7 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
   // only thing in the strip.
   if (envLocked || onEnvironmentChange === undefined) {
     return (
-      <span
-        className="inline-flex h-7 min-w-0 max-w-full items-center gap-1 border border-transparent px-[calc(--spacing(3)-1px)] text-sm font-medium text-muted-foreground/70 sm:h-6 sm:text-xs"
-        data-composer-context-control
-      >
+      <span className="inline-flex h-7 min-w-0 max-w-full items-center gap-1 border border-transparent px-[calc(--spacing(3)-1px)] text-sm font-medium text-muted-foreground/70 sm:h-6 sm:text-xs">
         {activeEnvironment?.isPrimary ? (
           <MonitorIcon className="size-3 shrink-0" />
         ) : (
@@ -59,14 +56,9 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
         )}
         <span
           data-composer-label
-          className="min-w-0 max-w-[240px] group-data-[compact]/composer-context:max-w-0"
+          className="min-w-0 max-w-[240px] truncate transition-[max-width,opacity] duration-300 ease-out group-data-[compact]/composer-context:max-w-0 group-data-[compact]/composer-context:opacity-0"
         >
-          <span
-            data-composer-label-motion
-            className="block w-full min-w-0 max-w-[240px] origin-left truncate transition-[opacity,transform] duration-180 ease-[cubic-bezier(0.32,0.72,0,1)] group-data-[compact]/composer-context:[transform:translateX(-0.25rem)_scaleX(0.95)] group-data-[compact]/composer-context:opacity-0 motion-reduce:transform-none motion-reduce:transition-opacity"
-          >
-            {activeEnvironment?.label ?? "Run on"}
-          </span>
+          {activeEnvironment?.label ?? "Run on"}
         </span>
       </span>
     );
@@ -84,7 +76,6 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
         size="xs"
         className="min-w-0 max-w-full font-medium"
         aria-label="Run on"
-        data-composer-context-control
       >
         {activeEnvironment?.isPrimary ? (
           <MonitorIcon className="size-3 shrink-0" />
@@ -93,14 +84,9 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
         )}
         <span
           data-composer-label
-          className="min-w-0 max-w-[240px] group-data-[compact]/composer-context:max-w-0"
+          className="min-w-0 max-w-[240px] truncate transition-[max-width,opacity] duration-300 ease-out group-data-[compact]/composer-context:max-w-0 group-data-[compact]/composer-context:opacity-0"
         >
-          <span
-            data-composer-label-motion
-            className="block w-full min-w-0 max-w-[240px] origin-left truncate transition-[opacity,transform] duration-180 ease-[cubic-bezier(0.32,0.72,0,1)] group-data-[compact]/composer-context:[transform:translateX(-0.25rem)_scaleX(0.95)] group-data-[compact]/composer-context:opacity-0 motion-reduce:transform-none motion-reduce:transition-opacity"
-          >
-            <SelectValue />
-          </span>
+          <SelectValue />
         </span>
       </SelectTrigger>
       <SelectPopup>

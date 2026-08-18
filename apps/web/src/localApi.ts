@@ -41,9 +41,6 @@ function createBrowserLocalApi(): LocalApi {
         }
         return showContextMenuFallback(items, position);
       },
-      // A native desktop menu blocks keyboard input and closes on outside
-      // interaction, so nothing to do there; the DOM fallback needs an explicit
-      // dismiss when the state behind it goes away.
       close: async () => {
         if (!window.desktopBridge) {
           dismissContextMenu();

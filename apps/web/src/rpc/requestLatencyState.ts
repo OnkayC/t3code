@@ -49,11 +49,7 @@ function getSlowRpcAckRequestsValue(): ReadonlyArray<SlowRpcAckRequest> {
 }
 
 function shouldTrackRpcAck(method: string): boolean {
-  return (
-    !method.includes("subscribe") &&
-    !method.startsWith("pullRequests.") &&
-    !untrackedRpcAckMethods.has(method)
-  );
+  return !method.includes("subscribe") && !untrackedRpcAckMethods.has(method);
 }
 
 function rpcAckThresholdMs(method: string): number {

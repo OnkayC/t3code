@@ -182,7 +182,42 @@ export function resolveThreadOutboxDeliveryAction(input: {
   if (!input.threadExists) {
     return input.shellStatus === "live" ? "remove" : "wait";
   }
-  return input.environmentConnected ? "send" : "wait";
+  return input.environmentConnected && (!input.threadBusy || input.canSendFollowUp === true)
+    ? "send"
+    : "wait";
+}
+
+export function resolveThreadOutboxDeliveryDecision(input: {
+  readonly isCreation: boolean;
+  readonly threadExists: boolean;
+  readonly shellStatus: EnvironmentShellStatus;
+  readonly environmentConnected: boolean;
+  readonly threadBusy: boolean;
+  readonly provider: Pick<ServerProvider, "supportedTurnDeliveryModes"> | null | undefined;
+  /** True when draining would first replace the live session (e.g. runtime-mode change). */
+  readonly wouldReplaceActiveSession?: boolean;
+}): {
+  readonly action: ThreadOutboxDeliveryAction;
+  readonly deliveryMode: ProviderTurnDeliveryMode | undefined;
+} {
+  const deliveryMode =
+    input.wouldReplaceActiveSession === true
+      ? undefined
+      : resolveProviderTurnDeliveryMode({
+          intent: !input.isCreation && input.threadBusy ? "queue" : "send",
+          provider: input.provider,
+        });
+  return {
+    action: resolveThreadOutboxDeliveryAction({
+      isCreation: input.isCreation,
+      threadExists: input.threadExists,
+      shellStatus: input.shellStatus,
+      environmentConnected: input.environmentConnected,
+      threadBusy: input.threadBusy,
+      canSendFollowUp: deliveryMode === "follow-up",
+    }),
+    deliveryMode,
+  };
 }
 
 /**

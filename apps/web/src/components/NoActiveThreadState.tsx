@@ -11,9 +11,7 @@ export function NoActiveThreadState() {
         <header
           className={cn(
             "border-b border-border px-3 transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none sm:px-5",
-            isElectron
-              ? "drag-region flex h-[var(--workspace-topbar-height)] min-h-[var(--workspace-topbar-height)] shrink-0 items-center"
-              : "flex h-[var(--workspace-topbar-height)] min-h-[var(--workspace-topbar-height)] shrink-0 items-center",
+            isElectron ? "workspace-topbar drag-region" : "workspace-topbar",
             COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
           )}
         >

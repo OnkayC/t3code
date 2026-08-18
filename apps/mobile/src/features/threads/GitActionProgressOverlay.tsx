@@ -2,19 +2,16 @@ import * as Haptics from "expo-haptics";
 import { isLiquidGlassSupported, LiquidGlassView } from "@callstack/liquid-glass";
 import { SymbolView } from "../../components/AppSymbol";
 import { useCallback, useEffect, useRef } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
+import { ActivityIndicator, Pressable, StyleSheet, useColorScheme, View } from "react-native";
 import Animated, { FadeIn, FadeOut, LinearTransition } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppText as Text } from "../../components/AppText";
-import { APP_BAR_HEIGHT } from "../../lib/layoutMetrics";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { useThemeColor } from "../../lib/useThemeColor";
 import type { GitActionProgress } from "../../state/use-vcs-action-state";
-import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 
 const OVERLAY_LAYOUT_TRANSITION = LinearTransition.duration(220);
-const OVERLAY_TOP_GAP = 8;
 const AnimatedLiquidGlassView = Animated.createAnimatedComponent(LiquidGlassView);
 
 export function GitActionProgressOverlay(props: {
@@ -55,7 +52,7 @@ export function GitActionProgressOverlay(props: {
       entering={isLiquidGlassSupported ? undefined : FadeIn.duration(200)}
       exiting={FadeOut.duration(150)}
       className="absolute inset-x-3 z-[100]"
-      style={{ top: insets.top + APP_BAR_HEIGHT + OVERLAY_TOP_GAP }}
+      style={{ top: insets.top + 48 }}
       pointerEvents="box-none"
     >
       <Pressable onPress={handlePress}>
@@ -70,8 +67,7 @@ function OverlayContent(props: { readonly progress: GitActionProgress }) {
   const iconColor = useThemeColor("--color-icon");
   const glassBorder = useThemeColor("--color-header-border");
   const glassTint = useThemeColor("--color-glass-tint");
-  const { themeAppearance } = useAppearancePreferences();
-  const isDarkMode = themeAppearance === "dark";
+  const isDarkMode = useColorScheme() === "dark";
   const content = (
     <>
       <OverlayIcon phase={progress.phase} iconColor={iconColor} />

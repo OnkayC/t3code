@@ -429,19 +429,13 @@ function AdaptiveWorkspaceLayoutContent(
   );
 
   const handleOpenSettings = useCallback(() => {
-    navigation.navigate("SettingsSheet", {
-      screen: "SettingsContent",
-      params: { screen: "Settings" },
-    });
+    navigation.navigate("SettingsSheet", { screen: "Settings" });
   }, [navigation]);
 
   // Minted here (root stack navigation) so the sidebar pane stays free of
   // navigation hooks — on iOS it renders inside an independent nav tree.
   const handleOpenEnvironmentSettings = useCallback(() => {
-    navigation.navigate("SettingsSheet", {
-      screen: "SettingsContent",
-      params: { screen: "SettingsEnvironments" },
-    });
+    navigation.navigate("SettingsSheet", { screen: "SettingsEnvironments" });
   }, [navigation]);
 
   const handleNewThreadInProject = useCallback(

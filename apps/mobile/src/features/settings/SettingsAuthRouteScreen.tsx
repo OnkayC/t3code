@@ -1,7 +1,8 @@
 import { useAuth } from "@clerk/expo";
 import { AuthView, UserProfileView } from "@clerk/expo/native";
 import { StackActions, useNavigation } from "@react-navigation/native";
-import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import { NativeStackScreenOptions } from "../../native/StackHeader";
+import { useCallback, useEffect } from "react";
 import { View } from "react-native";
 
 import { hasCloudPublicConfig } from "../cloud/publicConfig";
@@ -9,9 +10,9 @@ import { hasCloudPublicConfig } from "../cloud/publicConfig";
 export function SettingsAuthRouteScreen() {
   const navigation = useNavigation();
 
-  useLayoutEffect(() => {
+  useEffect(() => {
     if (!hasCloudPublicConfig()) {
-      navigation.dispatch(StackActions.replace("SettingsContent"));
+      navigation.dispatch(StackActions.replace("Settings"));
     }
   }, [navigation]);
 
@@ -21,30 +22,20 @@ export function SettingsAuthRouteScreen() {
 function ConfiguredSettingsAuthRouteScreen() {
   const { isLoaded, isSignedIn } = useAuth({ treatPendingAsSignedOut: false });
   const navigation = useNavigation();
-  const handleHostBack = useCallback(
-    () => navigation.dispatch(StackActions.popTo("SettingsContent")),
-    [navigation],
-  );
-  const hasBeenSignedIn = useRef(isSignedIn);
-  if (isSignedIn) {
-    hasBeenSignedIn.current = true;
-  }
-
-  useEffect(() => {
-    if (hasBeenSignedIn.current && isLoaded && isSignedIn === false) {
-      navigation.dispatch(StackActions.popTo("SettingsContent"));
-    }
-  }, [isLoaded, isSignedIn, navigation]);
+  const handleHostBack = useCallback(() => navigation.goBack(), [navigation]);
 
   return (
-    <View collapsable={false} className="flex-1 overflow-hidden bg-sheet">
-      {isLoaded ? (
-        hasBeenSignedIn.current ? (
-          <UserProfileView isDismissible={false} onHostBack={handleHostBack} />
-        ) : (
-          <AuthView isDismissible={false} onHostBack={handleHostBack} />
-        )
-      ) : null}
-    </View>
+    <>
+      <NativeStackScreenOptions options={{ headerShown: false }} />
+      <View collapsable={false} className="flex-1 overflow-hidden bg-sheet">
+        {isLoaded ? (
+          isSignedIn ? (
+            <UserProfileView isDismissible={false} onHostBack={handleHostBack} />
+          ) : (
+            <AuthView isDismissible={false} onHostBack={handleHostBack} />
+          )
+        ) : null}
+      </View>
+    </>
   );
 }

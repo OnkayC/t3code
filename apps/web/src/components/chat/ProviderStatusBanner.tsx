@@ -2,7 +2,6 @@ import { type ServerProvider } from "@t3tools/contracts";
 import { memo } from "react";
 import { InfoIcon, XIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
-import { Button } from "../ui/button";
 import { formatProviderDriverKindLabel } from "../../providerModels";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
@@ -67,15 +66,14 @@ export const ProviderStatusBanner = memo(function ProviderStatusBanner({
             </TooltipPopup>
           </Tooltip>
         </div>
-        <Button
+        <button
+          type="button"
           aria-label={`Dismiss ${providerName} provider ${status.status}`}
-          className="absolute top-2 right-2 size-6 text-muted-foreground hover:text-foreground"
+          className="absolute top-2 right-2 inline-flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-foreground/8 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
           onClick={onDismiss}
-          size="icon-xs"
-          variant="ghost"
         >
           <XIcon aria-hidden className="size-3.5" />
-        </Button>
+        </button>
       </div>
     </div>
   );

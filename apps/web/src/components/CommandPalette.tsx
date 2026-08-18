@@ -1,12 +1,7 @@
 "use client";
 
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import {
-  canCreateProjectInEnvironment,
-  getCloneDestinationBrowsePath,
-  getCloneDestinationPath,
-  getCloneDirectoryName,
-} from "@t3tools/client-runtime/operations/projects";
+import { canCreateProjectInEnvironment } from "@t3tools/client-runtime/operations/projects";
 import { connectionStatusText } from "@t3tools/client-runtime/connection";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import {
@@ -103,7 +98,6 @@ import {
 } from "../wslPaths";
 import {
   ADDON_ICON_CLASS,
-  browseInputEndPaddingClass,
   buildBrowseGroups,
   buildProjectActionItems,
   buildRootGroups,
@@ -114,7 +108,6 @@ import {
   type CommandPaletteSubmenuItem,
   type CommandPaletteView,
   filterCommandPaletteGroups,
-  filterPinnedBrowseEntries,
   getCommandPaletteInputPlaceholder,
   getCommandPaletteMode,
   ITEM_ICON_CLASS,
@@ -131,14 +124,9 @@ import { ProjectFavicon } from "./ProjectFavicon";
 import { ProjectFilePicker } from "./files/ProjectFilePicker";
 import { ProjectContentSearchDialog } from "./search/ProjectContentSearchDialog";
 import { toggleThemeEditorForTheme } from "./settings/themeEditorStore";
-import { ThreadCommandSubtitle } from "./ThreadCommandSubtitle";
 import { ThreadRowLeadingStatus, ThreadRowTrailingStatus } from "./ThreadStatusIndicators";
 import { primaryServerKeybindingsAtom, primaryServerProvidersAtom } from "../state/server";
-import {
-  deriveProviderInstanceEntries,
-  resolveDefaultProviderModelSelection,
-  type ProviderInstanceEntry,
-} from "../providerInstances";
+import { resolveDefaultProviderModelSelection } from "../providerInstances";
 import { resolveShortcutCommand, threadJumpIndexFromCommand } from "../keybindings";
 import { CommandDialog, CommandDialogPopup } from "./ui/command";
 import { Button } from "./ui/button";
@@ -596,18 +584,6 @@ function OpenCommandPaletteDialog(props: {
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const { theme, themeHalves, resolvedTheme } = useTheme();
   const providers = useAtomValue(primaryServerProvidersAtom);
-  const providerEntryByEnvironmentAndInstanceId = useMemo(() => {
-    const map = new Map<string, ProviderInstanceEntry>();
-    for (const environment of environments) {
-      const environmentProviders =
-        environment.serverConfig?.providers ??
-        (environment.environmentId === primaryEnvironmentId ? providers : []);
-      for (const entry of deriveProviderInstanceEntries(environmentProviders)) {
-        map.set(`${environment.environmentId}:${entry.instanceId}`, entry);
-      }
-    }
-    return map;
-  }, [environments, primaryEnvironmentId, providers]);
   const [viewStack, setViewStack] = useState<CommandPaletteView[]>([]);
   const currentView = viewStack.at(-1) ?? null;
   const environmentIds = useMemo(
@@ -813,16 +789,6 @@ function OpenCommandPaletteDialog(props: {
   );
   const isRemoteProjectCloneFlow = addProjectCloneFlow !== null;
   const isRemoteProjectRepositoryStep = addProjectCloneFlow?.step === "repository";
-  // The destination step pins the repository folder onto the browsed path, so
-  // the proposed clone target is "<chosen folder>/<repo>" instead of the bare
-  // folder. A lookup reports "owner/repo"; a pasted clone URL falls back to its
-  // own last segment, minus ".git".
-  const pinnedCloneDirectoryName =
-    addProjectCloneFlow?.step === "confirm"
-      ? getCloneDirectoryName(
-          addProjectCloneFlow.repository?.nameWithOwner ?? addProjectCloneFlow.remoteUrl,
-        )
-      : "";
   const browsePath = useMemo(
     () => getFilesystemBrowsePath(query, browseEnvironmentPlatform, !isRemoteProjectRepositoryStep),
     [browseEnvironmentPlatform, isRemoteProjectRepositoryStep, query],
@@ -848,10 +814,6 @@ function OpenCommandPaletteDialog(props: {
   const projectCwdById = useMemo(
     () =>
       new Map<ProjectId, string>(projects.map((project) => [project.id, project.workspaceRoot])),
-    [projects],
-  );
-  const projectFaviconPathById = useMemo(
-    () => new Map(projects.map((project) => [project.id, project.faviconPath ?? null] as const)),
     [projects],
   );
   const projectTitleById = useMemo(
@@ -895,16 +857,8 @@ function OpenCommandPaletteDialog(props: {
   const isBrowsePending = browseQuery.isPending;
   const browseEntries = browseResult?.entries ?? EMPTY_BROWSE_ENTRIES;
   const { visibleEntries: visibleBrowseEntries, exactEntry: exactBrowseEntry } = useMemo(
-    () =>
-      pinnedCloneDirectoryName
-        ? filterPinnedBrowseEntries({
-            browseEntries,
-            filterQuery: browsePath.filterQuery,
-            pinnedDirectoryName: pinnedCloneDirectoryName,
-            caseSensitive: !isWindowsPlatform(browseEnvironmentPlatform),
-          })
-        : filterFilesystemBrowseEntries(browseEntries, browsePath.filterQuery),
-    [browseEntries, browseEnvironmentPlatform, browsePath.filterQuery, pinnedCloneDirectoryName],
+    () => filterFilesystemBrowseEntries(browseEntries, browsePath.filterQuery),
+    [browseEntries, browsePath.filterQuery],
   );
 
   const prefetchBrowsePath = useCallback(
@@ -1046,29 +1000,6 @@ function OpenCommandPaletteDialog(props: {
         icon: <MessageSquareIcon className={ITEM_ICON_CLASS} />,
         renderLeadingContent: (thread) => <ThreadRowLeadingStatus thread={thread} />,
         renderTrailingContent: (thread) => <ThreadRowTrailingStatus thread={thread} />,
-        renderDescription: (thread, { projectTitle }) => {
-          const modelInstanceId =
-            thread.session?.providerInstanceId ?? thread.modelSelection.instanceId;
-          const providerEntry =
-            providerEntryByEnvironmentAndInstanceId.get(
-              `${thread.environmentId}:${modelInstanceId}`,
-            ) ?? null;
-          return (
-            <ThreadCommandSubtitle
-              environmentId={thread.environmentId}
-              projectCwd={projectCwdById.get(thread.projectId) ?? null}
-              projectFaviconPath={projectFaviconPathById.get(thread.projectId) ?? null}
-              projectTitle={projectTitle ?? null}
-              branch={thread.branch}
-              worktreePath={thread.worktreePath}
-              isCurrent={thread.id === activeThreadId}
-              driverKind={providerEntry?.driverKind ?? null}
-              providerDisplayName={
-                thread.session?.providerName ?? providerEntry?.displayName ?? modelInstanceId
-              }
-            />
-          );
-        },
         getContentMatch: (thread) => {
           const match = threadContentMatchByKey.get(
             threadSearchMatchKey({
@@ -1095,10 +1026,7 @@ function OpenCommandPaletteDialog(props: {
       activeThreadId,
       clientSettings.sidebarThreadSortOrder,
       navigate,
-      projectCwdById,
-      projectFaviconPathById,
       projectTitleById,
-      providerEntryByEnvironmentAndInstanceId,
       threadContentMatchByKey,
       threadSearchQuery,
       threads,
@@ -1817,10 +1745,7 @@ function OpenCommandPaletteDialog(props: {
 
       const provider = remoteProjectSourceProvider(addProjectCloneFlow.source);
       if (!provider) {
-        const destinationPath = getCloneDestinationPath(
-          getDefaultCloneParentPath(addProjectCloneFlow.environmentId),
-          getCloneDirectoryName(rawRepository),
-        );
+        const destinationPath = getDefaultCloneParentPath(addProjectCloneFlow.environmentId);
         setAddProjectCloneFlow({
           step: "confirm",
           environmentId: addProjectCloneFlow.environmentId,
@@ -1857,10 +1782,7 @@ function OpenCommandPaletteDialog(props: {
         return;
       }
       const repository = lookupResult.value;
-      const destinationPath = getCloneDestinationPath(
-        getDefaultCloneParentPath(addProjectCloneFlow.environmentId),
-        getCloneDirectoryName(repository.nameWithOwner),
-      );
+      const destinationPath = getDefaultCloneParentPath(addProjectCloneFlow.environmentId);
       setAddProjectCloneFlow({
         step: "confirm",
         environmentId: addProjectCloneFlow.environmentId,
@@ -1936,14 +1858,7 @@ function OpenCommandPaletteDialog(props: {
 
   const browseTo = useCallback(
     async (name: string): Promise<void> => {
-      const nextQuery = pinnedCloneDirectoryName
-        ? getCloneDestinationBrowsePath({
-            browseDirectoryPath: browsePath.directoryPath,
-            selectedDirectoryName: name,
-            cloneDirectoryName: pinnedCloneDirectoryName,
-            caseSensitive: !isWindowsPlatform(browseEnvironmentPlatform),
-          })
-        : appendBrowsePathSegment(query, name);
+      const nextQuery = appendBrowsePathSegment(query, name);
       await browseNavigation.run(
         () => prefetchBrowsePath(getBrowseDirectoryPath(nextQuery)),
         () => {
@@ -1953,14 +1868,7 @@ function OpenCommandPaletteDialog(props: {
         },
       );
     },
-    [
-      browseNavigation,
-      browseEnvironmentPlatform,
-      browsePath.directoryPath,
-      pinnedCloneDirectoryName,
-      prefetchBrowsePath,
-      query,
-    ],
+    [browseNavigation, prefetchBrowsePath, query],
   );
 
   const browseUp = useCallback(async (): Promise<void> => {
@@ -1969,16 +1877,15 @@ function OpenCommandPaletteDialog(props: {
       return;
     }
 
-    const nextQuery = getCloneDestinationPath(parentPath, pinnedCloneDirectoryName);
     await browseNavigation.run(
       () => prefetchBrowsePath(parentPath),
       () => {
         setHighlightedItemValue(null);
-        setQuery(nextQuery);
+        setQuery(parentPath);
         setBrowseGeneration((generation) => generation + 1);
       },
     );
-  }, [browseNavigation, browsePath.parentPath, pinnedCloneDirectoryName, prefetchBrowsePath]);
+  }, [browseNavigation, browsePath.parentPath, prefetchBrowsePath]);
 
   // Resolve the add-project path from browse data when available. When the
   // query has a trailing separator (e.g. "~/projects/foo/"), parentPath is the
@@ -2391,16 +2298,13 @@ function OpenCommandPaletteDialog(props: {
       footerTrailing={footerTrailing}
       inputAccessory={inputAccessory}
       inputProps={{
-        // The submit button is absolutely positioned over the field, so the
-        // inner input must reserve enough room for the full action label.
         className:
           addProjectCloneFlow?.step === "repository"
-            ? "*:data-[slot=autocomplete-input]:pe-32!"
+            ? "pe-32"
             : isBrowsing
-              ? browseInputEndPaddingClass({
-                  willCreateProjectPath,
-                  hasHighlightedBrowseItem,
-                })
+              ? willCreateProjectPath
+                ? "pe-36"
+                : "pe-16"
               : undefined,
         placeholder: inputPlaceholder,
         wrapperClassName: isSubmenu

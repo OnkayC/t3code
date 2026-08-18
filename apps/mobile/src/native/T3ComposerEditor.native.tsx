@@ -21,7 +21,6 @@ import { useFontFamily } from "../lib/useFontFamily";
 import { useThemeColor } from "../lib/useThemeColor";
 import {
   acknowledgeComposerNativeEvent,
-  assumeComposerControlledState,
   isComposerNativeEcho,
   pruneAcknowledgedComposerNativeEvents,
   resolveComposerControlledEventCount,
@@ -104,11 +103,11 @@ export function ComposerEditor({
   const nativeRef = useRef<NativeComposerEditorRef>(null);
   const mostRecentEventCountRef = useRef(0);
   const [mostRecentEventCount, setMostRecentEventCount] = useState(0);
-  const [, forceNativeEventRender] = useState(0);
-  // The native editor mounts empty, so the snapshot history starts empty: the
-  // first controlled payload must be a non-echo so a restored draft (or a
-  // recycled native view) is applied rather than skipped.
-  const nativeEventSnapshotsRef = useRef<ComposerNativeEventSnapshot[]>([]);
+  const [nativeEventSequence, setNativeEventSequence] = useState(0);
+  const previousRenderedEventSequenceRef = useRef(0);
+  const nativeEventSnapshotsRef = useRef<ComposerNativeEventSnapshot[]>([
+    { eventCount: 0, value: props.value, selection: selection ?? null },
+  ]);
   const [initialConfirmedTokens] = useState(() => collectComposerInlineTokens(props.value));
   const confirmedTokensRef = useRef(initialConfirmedTokens);
   const textColor = useThemeColor("--color-foreground");
@@ -156,16 +155,15 @@ export function ComposerEditor({
       })),
     );
   }, [props.value, skillLabels]);
-  // Every render resolves against the snapshot history, so a render whose
-  // (value, selection) lags the acknowledged native state is stamped behind
-  // the native revision and rejected by the editor instead of re-applying a
-  // stale caret or stale text mid-typing.
-  const controlledEventCount = resolveComposerControlledEventCount(
-    props.value,
-    selection ?? null,
-    mostRecentEventCount,
-    nativeEventSnapshotsRef.current,
-  );
+  const includesNativeEvent = nativeEventSequence !== previousRenderedEventSequenceRef.current;
+  const controlledEventCount = includesNativeEvent
+    ? resolveComposerControlledEventCount(
+        props.value,
+        selection ?? null,
+        mostRecentEventCount,
+        nativeEventSnapshotsRef.current,
+      )
+    : mostRecentEventCount;
   const acknowledgesLatestNativeEvent = isComposerNativeEcho(
     props.value,
     selection ?? null,
@@ -173,7 +171,9 @@ export function ComposerEditor({
     nativeEventSnapshotsRef.current,
   );
   const isNativeEcho =
-    controlledEventCount === mostRecentEventCount && acknowledgesLatestNativeEvent;
+    includesNativeEvent &&
+    controlledEventCount === mostRecentEventCount &&
+    acknowledgesLatestNativeEvent;
   const controlledDocumentJson = JSON.stringify({
     value: props.value,
     selection: isNativeEcho ? null : (selection ?? null),
@@ -182,24 +182,15 @@ export function ComposerEditor({
     isNativeEcho,
   });
   useEffect(() => {
+    previousRenderedEventSequenceRef.current = nativeEventSequence;
+  }, [nativeEventSequence]);
+  useEffect(() => {
     if (!acknowledgesLatestNativeEvent) return;
     nativeEventSnapshotsRef.current = pruneAcknowledgedComposerNativeEvents(
       nativeEventSnapshotsRef.current,
       mostRecentEventCount,
     );
   }, [acknowledgesLatestNativeEvent, mostRecentEventCount]);
-  const assumedValue = props.value;
-  useEffect(() => {
-    // A native event that arrived after this render was committed moves the
-    // acknowledged revision forward; the editor rejects this payload, so the
-    // snapshot history must not assume it applied.
-    if (isNativeEcho || controlledEventCount !== mostRecentEventCountRef.current) return;
-    nativeEventSnapshotsRef.current = assumeComposerControlledState(
-      nativeEventSnapshotsRef.current,
-      controlledEventCount,
-      assumedValue,
-    );
-  }, [assumedValue, controlledEventCount, isNativeEcho, controlledDocumentJson]);
   const acceptNativeEvent = useCallback(
     (eventCount: number, value: string, nextSelection: ComposerEditorSelection) => {
       const acknowledgedEventCount = acknowledgeComposerNativeEvent(
@@ -272,7 +263,7 @@ export function ComposerEditor({
           onChangeText(event.nativeEvent.value);
           onSelectionChange?.(event.nativeEvent.selection);
           setMostRecentEventCount(acknowledgedEventCount);
-          forceNativeEventRender((sequence) => sequence + 1);
+          setNativeEventSequence((sequence) => sequence + 1);
         }}
         onComposerSelectionChange={(event) => {
           const acknowledgedEventCount = acceptNativeEvent(
@@ -281,17 +272,9 @@ export function ComposerEditor({
             event.nativeEvent.selection,
           );
           if (acknowledgedEventCount === false) return;
-          // Android emits the selection change mid-mutation, before the change
-          // event, so the payload can carry post-edit text. It must reach the
-          // parent alongside the acknowledged revision, or the next render
-          // stamps the stale draft at that revision and can re-apply it over
-          // the newer native text.
-          if (event.nativeEvent.value !== props.value) {
-            onChangeText(event.nativeEvent.value);
-          }
           onSelectionChange?.(event.nativeEvent.selection);
           setMostRecentEventCount(acknowledgedEventCount);
-          forceNativeEventRender((sequence) => sequence + 1);
+          setNativeEventSequence((sequence) => sequence + 1);
         }}
         onComposerPasteImages={(event) => onPasteImages?.(event.nativeEvent.uris)}
         onComposerFocus={onFocus}

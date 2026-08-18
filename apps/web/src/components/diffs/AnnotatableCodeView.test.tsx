@@ -21,8 +21,8 @@ vi.mock("~/composerDraftStore", () => ({
     }),
 }));
 
-vi.mock("./DiffCommentAnnotation", () => ({
-  DiffCommentAnnotation: () => null,
+vi.mock("../files/LocalCommentAnnotation", () => ({
+  LocalCommentAnnotation: () => null,
 }));
 
 vi.mock("../files/fileCommentAnnotations", () => ({

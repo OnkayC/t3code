@@ -560,9 +560,9 @@ export function ProviderInstanceCard({
             <TooltipTrigger
               render={
                 <Button
-                  size="icon-micro"
+                  size="icon-xs"
                   variant="ghost"
-                  className="text-muted-foreground hover:text-destructive"
+                  className="size-5 rounded-sm p-0 text-muted-foreground hover:text-destructive"
                   onClick={onDelete}
                   aria-label={`Delete provider instance ${instanceId}`}
                 >
@@ -619,7 +619,7 @@ export function ProviderInstanceCard({
                           "size-5 rounded-sm p-0",
                           versionAdvisory.emphasis === "strong"
                             ? "text-warning hover:text-warning"
-                            : "text-update-foreground hover:text-update-foreground",
+                            : "text-update hover:text-update",
                         )}
                         aria-label="Update available — view details"
                       >
@@ -708,8 +708,9 @@ export function ProviderInstanceCard({
           </div>
           <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
             <Button
-              size="compact"
-              variant="ghost-muted"
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
               onClick={() => onExpandedChange(!isExpanded)}
               aria-label={`Toggle ${displayName} details`}
             >

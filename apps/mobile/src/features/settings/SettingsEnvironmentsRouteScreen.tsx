@@ -2,7 +2,7 @@ import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/Stac
 import { useNavigation } from "@react-navigation/native";
 import { SymbolView } from "../../components/AppSymbol";
 import type { EnvironmentId } from "@t3tools/contracts";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Platform, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -20,6 +20,7 @@ import {
   SHOWCASE_AVAILABLE_CLOUD_ENVIRONMENTS,
   SHOWCASE_CONNECTED_CLOUD_ENVIRONMENTS,
 } from "../showcase/showcaseEnvironmentRows";
+import { markNativeShowcaseReady } from "../showcase/nativeShowcaseScene";
 
 const SHOWCASE_ENABLED = process.env.EXPO_PUBLIC_SHOWCASE === "1";
 
@@ -46,6 +47,12 @@ export function SettingsEnvironmentsRouteScreen() {
   const [expandedId, setExpandedId] = useState<EnvironmentId | null>(null);
   const accentColor = useThemeColor("--color-icon-muted");
   const headerIconColor = useThemeColor("--color-icon");
+
+  useEffect(() => {
+    if (!SHOWCASE_ENABLED) return;
+    const timer = setTimeout(() => markNativeShowcaseReady("environments"), 500);
+    return () => clearTimeout(timer);
+  }, []);
 
   const handleToggle = useCallback((environmentId: EnvironmentId) => {
     setExpandedId((prev) => (prev === environmentId ? null : environmentId));
@@ -91,10 +98,7 @@ export function SettingsEnvironmentsRouteScreen() {
                 accessibilityLabel: "Add environment",
                 icon: "plus",
                 onPress: () =>
-                  navigation.navigate("SettingsSheet", {
-                    screen: "SettingsContent",
-                    params: { screen: "SettingsEnvironmentNew" },
-                  }),
+                  navigation.navigate("SettingsSheet", { screen: "SettingsEnvironmentNew" }),
               },
             ]}
           />
@@ -104,10 +108,7 @@ export function SettingsEnvironmentsRouteScreen() {
           <NativeHeaderToolbar.Button
             icon="plus"
             onPress={() =>
-              navigation.navigate("SettingsSheet", {
-                screen: "SettingsContent",
-                params: { screen: "SettingsEnvironmentNew" },
-              })
+              navigation.navigate("SettingsSheet", { screen: "SettingsEnvironmentNew" })
             }
             separateBackground
             tintColor={headerIconColor}

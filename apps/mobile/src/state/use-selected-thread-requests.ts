@@ -4,8 +4,18 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApprovalRequestId,
   type ProviderApprovalDecision,
+  type ProviderPlanReviewDecision,
+  type ProviderUserInputResponse,
+  TurnId,
   type UserInputQuestion,
 } from "@t3tools/contracts";
+import {
+  createPlanReviewResponseCoordinator,
+  foldProviderInteractionActivities,
+  samePlanReviewResponseScope,
+  type PlanReviewResponseScope,
+  type ProviderQueuedTurn,
+} from "@t3tools/client-runtime/state/providerInteractionRuntime";
 import { Atom } from "effect/unstable/reactivity";
 
 import { threadEnvironment } from "../state/threads";
@@ -203,13 +213,15 @@ export function useSelectedThreadRequests() {
     : null;
 
   const onSelectUserInputOption = useCallback(
-    (requestId: ApprovalRequestId, question: UserInputQuestion, label: string) => {
-      if (!selectedThreadShell) {
-        return;
-      }
-
-      const requestKey = scopedRequestKey(selectedThreadShell.environmentId, requestId);
-      setUserInputDraftOption(requestKey, question, label);
+    (requestId: ApprovalRequestId, questionId: string, label: string) => {
+      if (!selectedThreadShell || !activePendingUserInput) return;
+      const question = activePendingUserInput.questions.find((entry) => entry.id === questionId);
+      if (!question) return;
+      setUserInputDraftOption(
+        scopedRequestKey(selectedThreadShell.environmentId, selectedThreadShell.id, requestId),
+        question,
+        label,
+      );
     },
     [activePendingUserInput, selectedThreadShell],
   );

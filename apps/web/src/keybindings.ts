@@ -71,15 +71,9 @@ function normalizeEventKey(key: string): string {
 }
 
 function resolveEventKeys(event: ShortcutEventLike): Set<string> {
-  const layoutKey = normalizeEventKey(event.key);
-  const keys = new Set([layoutKey]);
-  // The physical-position fallback exists for layouts that type non-Latin
-  // letters (Cyrillic, Greek) and for Option-modified symbols on macOS.
-  // When the layout already produces a Latin letter, match on it alone;
-  // otherwise a remapped physical key triggers shortcuts for two different
-  // letters at once and shadows system shortcuts on non-QWERTY layouts.
+  const keys = new Set([normalizeEventKey(event.key)]);
   const letterCode = event.code?.match(/^Key([A-Z])$/)?.[1];
-  if (letterCode && !/^[a-z]$/.test(layoutKey)) {
+  if (letterCode) {
     keys.add(letterCode.toLowerCase());
   }
   const aliases = event.code ? EVENT_CODE_KEY_ALIASES[event.code] : undefined;

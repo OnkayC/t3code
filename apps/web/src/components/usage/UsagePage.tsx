@@ -2,47 +2,39 @@ import type { UsageProviderKind } from "@t3tools/contracts";
 import { CheckIcon, RefreshCwIcon, XIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 
-import type { DailyTotals, HourlyTotals } from "@t3tools/shared/usageMerge";
-
 import { isElectron } from "../../env";
 import { cn } from "../../lib/utils";
 import { useUsage, type EnvironmentUsageStatus } from "../../state/usage";
 import {
   enumerateDays,
-  enumerateHourStarts,
   formatCount,
-  formatDateTimeShort,
   formatDayShort,
-  formatHourShort,
   formatPercent,
   formatTokens,
   formatUsd,
   makeWindow,
 } from "@t3tools/shared/usageFormat";
 import { ScrollArea } from "../ui/scroll-area";
-import { Button } from "../ui/button";
 import { SidebarInset } from "../ui/sidebar";
 import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../WorkspaceBreadcrumb";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../../workspaceTitlebar";
 import { UsageChartLegend, UsageProviderChart, type UsageChartMetric } from "./UsageProviderChart";
-import { PROVIDER_ORDER, PROVIDER_PRESENTATION } from "./usageProviders";
+import { PROVIDER_COLOR, PROVIDER_LABEL, PROVIDER_MARK, PROVIDER_ORDER } from "./usageProviders";
 
 const WINDOW_OPTIONS = [
-  { days: 1, label: "Past 24h" },
   { days: 7, label: "7 days" },
   { days: 30, label: "30 days" },
   { days: 90, label: "90 days" },
 ] as const;
 
 export function UsagePage() {
-  const [windowSelection, setWindowSelection] = useState(() => ({
-    days: 30,
-    window: makeWindow(30),
-  }));
+  const [windowDays, setWindowDays] = useState<number>(30);
   const [metric, setMetric] = useState<UsageChartMetric>("cost");
-  const [breakdown, setBreakdown] = useState<"model" | "time">("model");
-  const { days: windowDays, window } = windowSelection;
-  const isPast24Hours = windowDays === 1;
+  const [breakdown, setBreakdown] = useState<"model" | "day">("model");
+
+  // Recomputed only when the window length changes, so a re-render does not
+  // shift the range and refetch every environment.
+  const window = useMemo(() => makeWindow(windowDays), [windowDays]);
   const { merged, environments, isPending, isPartial, refresh } = useUsage(window);
 
   // Hold the content until every environment is terminal. Rendering merged
@@ -54,19 +46,7 @@ export function UsagePage() {
     () => enumerateDays(window.sinceDay, window.untilDay),
     [window.sinceDay, window.untilDay],
   );
-  const hours = useMemo(
-    () =>
-      window.sinceTime === undefined || window.untilTime === undefined
-        ? []
-        : enumerateHourStarts(window.sinceTime, window.untilTime),
-    [window.sinceTime, window.untilTime],
-  );
-  // Newest first: the window can run 90 periods, so the interesting end
-  // belongs at the top of the table.
-  const breakdownPeriods = useMemo<readonly (DailyTotals | HourlyTotals)[]>(
-    () => (isPast24Hours ? merged.hourly : merged.daily).toReversed(),
-    [isPast24Hours, merged.daily, merged.hourly],
-  );
+  const recentDays = useMemo(() => merged.daily.toReversed().slice(0, 8), [merged.daily]);
 
   // Ranked by whatever the toggle is showing, so the bars always descend.
   const orderedProviders = useMemo(
@@ -77,31 +57,10 @@ export function UsagePage() {
     [merged.providers, metric],
   );
 
-  const activePeriods = (isPast24Hours ? merged.hourly : merged.daily).filter(
-    (period) => period.totalTokens > 0,
-  ).length;
-  const periodAverage = activePeriods === 0 ? 0 : merged.totalTokens / activePeriods;
+  const activeDays = merged.daily.filter((day) => day.totalTokens > 0).length;
+  const dailyAverage = activeDays === 0 ? 0 : merged.totalTokens / activeDays;
   const observedInput = merged.uncachedInputTokens + merged.cachedInputTokens;
   const cachedShare = observedInput === 0 ? 0 : merged.cachedInputTokens / observedInput;
-  const selectWindow = (days: number) => {
-    setWindowSelection({
-      days,
-      window: makeWindow(days, undefined, days === 1 ? "hour" : "day"),
-    });
-  };
-  const refreshWindow = () => {
-    const nextWindow = makeWindow(windowDays, undefined, isPast24Hours ? "hour" : "day");
-    if (
-      nextWindow.sinceDay === window.sinceDay &&
-      nextWindow.untilDay === window.untilDay &&
-      nextWindow.sinceTime === window.sinceTime &&
-      nextWindow.untilTime === window.untilTime
-    ) {
-      refresh();
-    } else {
-      setWindowSelection({ days: windowDays, window: nextWindow });
-    }
-  };
 
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate">
@@ -109,7 +68,7 @@ export function UsagePage() {
         {!isElectron && (
           <header
             className={cn(
-              "flex h-[var(--workspace-topbar-height)] min-h-[var(--workspace-topbar-height)] shrink-0 items-center px-3 transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none sm:px-5",
+              "workspace-topbar px-3 transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none sm:px-5",
               COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
             )}
           >
@@ -136,20 +95,17 @@ export function UsagePage() {
           <div className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-6 py-6">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <p className="text-sm text-muted-foreground">
-                {isPast24Hours && window.sinceTime !== undefined && window.untilTime !== undefined
-                  ? `${formatDateTimeShort(window.sinceTime, window.timeZone)} to ${formatDateTimeShort(window.untilTime, window.timeZone)}`
-                  : `${formatDayShort(window.sinceDay)} to ${formatDayShort(window.untilDay)}`}
+                {formatDayShort(window.sinceDay)} to {formatDayShort(window.untilDay)}
               </p>
               <div className="flex items-center gap-2">
-                <div className="flex rounded-md border border-border">
+                <div className="flex overflow-hidden rounded-md border border-border">
                   {WINDOW_OPTIONS.map((option) => (
                     <button
                       key={option.days}
                       type="button"
-                      aria-pressed={option.days === windowDays}
-                      onClick={() => selectWindow(option.days)}
+                      onClick={() => setWindowDays(option.days)}
                       className={cn(
-                        "relative cursor-pointer px-3 py-1.5 text-xs outline-none first:rounded-s-[calc(var(--radius-md)-1px)] last:rounded-e-[calc(var(--radius-md)-1px)] focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
+                        "cursor-pointer px-3 py-1.5 text-xs",
                         option.days === windowDays
                           ? "bg-muted text-foreground"
                           : "text-muted-foreground hover:text-foreground",
@@ -159,21 +115,21 @@ export function UsagePage() {
                     </button>
                   ))}
                 </div>
-                <Button
-                  size="icon"
-                  variant="outline"
-                  onClick={refreshWindow}
+                <button
+                  type="button"
+                  onClick={refresh}
                   aria-label="Refresh usage"
+                  className="cursor-pointer rounded-md border border-border p-2 text-muted-foreground hover:text-foreground"
                 >
                   <RefreshCwIcon className="size-3.5" />
-                </Button>
+                </button>
               </div>
             </div>
 
             {settling ? (
               <>
                 {environments.length > 1 ? <UsageDeviceStrip environments={environments} /> : null}
-                <UsageSkeleton resolution={isPast24Hours ? "hour" : "day"} />
+                <UsageSkeleton />
               </>
             ) : (
               <>
@@ -211,7 +167,7 @@ export function UsagePage() {
                           <div className="flex items-baseline justify-between">
                             <span className="flex items-center gap-2 text-sm text-foreground">
                               <ProviderMark provider={provider.provider} className="size-4" />
-                              {PROVIDER_PRESENTATION[provider.provider].label}
+                              {PROVIDER_LABEL[provider.provider]}
                             </span>
                             <span className="text-sm text-foreground tabular-nums">
                               {metric === "cost"
@@ -224,7 +180,7 @@ export function UsagePage() {
                               className="h-full"
                               style={{
                                 width: `${(share * 100).toFixed(1)}%`,
-                                backgroundColor: PROVIDER_PRESENTATION[provider.provider].color,
+                                backgroundColor: PROVIDER_COLOR[provider.provider],
                               }}
                             />
                           </div>
@@ -241,8 +197,7 @@ export function UsagePage() {
                   <div className="flex flex-col gap-3">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <h2 className="text-sm font-medium text-foreground">
-                        {isPast24Hours ? "Hourly" : "Daily"}{" "}
-                        {metric === "tokens" ? "processed tokens" : "cost"}
+                        Daily {metric === "tokens" ? "processed tokens" : "cost"}
                       </h2>
                       <div className="flex items-center gap-4">
                         <div className="flex overflow-hidden rounded-md border border-border">
@@ -265,16 +220,7 @@ export function UsagePage() {
                         <UsageChartLegend />
                       </div>
                     </div>
-                    <UsageProviderChart
-                      days={days}
-                      daily={merged.daily}
-                      hours={hours}
-                      hourly={merged.hourly}
-                      metric={metric}
-                      referenceTime={window.untilTime}
-                      resolution={isPast24Hours ? "hour" : "day"}
-                      timeZone={window.timeZone}
-                    />
+                    <UsageProviderChart days={days} daily={merged.daily} metric={metric} />
                   </div>
                 </section>
 
@@ -282,7 +228,7 @@ export function UsagePage() {
                   <Metric
                     label="Processed tokens"
                     value={formatTokens(merged.totalTokens)}
-                    detail={`${formatTokens(periodAverage)} per active ${isPast24Hours ? "hour" : "day"}`}
+                    detail={`${formatTokens(dailyAverage)} per active day`}
                   />
                   <Metric
                     label="Cached input"
@@ -314,24 +260,19 @@ export function UsagePage() {
                   <div className="flex items-center justify-between gap-3">
                     <h2 className="text-sm font-medium text-foreground">Breakdown</h2>
                     <div className="flex overflow-hidden rounded-md border border-border">
-                      {(
-                        [
-                          { value: "model", label: "model" },
-                          { value: "time", label: isPast24Hours ? "hour" : "day" },
-                        ] as const
-                      ).map((option) => (
+                      {(["model", "day"] as const).map((option) => (
                         <button
-                          key={option.value}
+                          key={option}
                           type="button"
-                          onClick={() => setBreakdown(option.value)}
+                          onClick={() => setBreakdown(option)}
                           className={cn(
                             "cursor-pointer px-2.5 py-1 text-[10px] tracking-wide uppercase",
-                            option.value === breakdown
+                            option === breakdown
                               ? "bg-muted text-foreground"
                               : "text-muted-foreground hover:text-foreground",
                           )}
                         >
-                          {option.label}
+                          {option}
                         </button>
                       ))}
                     </div>
@@ -384,10 +325,10 @@ export function UsagePage() {
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b border-border text-left text-xs text-muted-foreground">
-                          <th className="py-2 font-normal">{isPast24Hours ? "Hour" : "Day"}</th>
+                          <th className="py-2 font-normal">Day</th>
                           {PROVIDER_ORDER.map((provider) => (
                             <th key={provider} className="py-2 text-right font-normal">
-                              {PROVIDER_PRESENTATION[provider].label}
+                              {PROVIDER_LABEL[provider]}
                             </th>
                           ))}
                           <th className="py-2 text-right font-normal">Total</th>
@@ -395,36 +336,29 @@ export function UsagePage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {breakdownPeriods.length === 0 ? (
+                        {recentDays.length === 0 ? (
                           <tr>
                             <td colSpan={5} className="py-6 text-center text-muted-foreground">
                               No activity in this window.
                             </td>
                           </tr>
                         ) : (
-                          breakdownPeriods.map((period) => (
-                            <tr
-                              key={"hourStart" in period ? period.hourStart : period.day}
-                              className="border-b border-border/50"
-                            >
-                              <td className="py-2 text-foreground">
-                                {"hourStart" in period
-                                  ? formatHourShort(period.hourStart, window.timeZone)
-                                  : formatDayShort(period.day)}
-                              </td>
+                          recentDays.map((day) => (
+                            <tr key={day.day} className="border-b border-border/50">
+                              <td className="py-2 text-foreground">{formatDayShort(day.day)}</td>
                               {PROVIDER_ORDER.map((provider) => (
                                 <td
                                   key={provider}
                                   className="py-2 text-right text-muted-foreground tabular-nums"
                                 >
-                                  {formatUsd(period.byProvider.get(provider)?.costUsd ?? 0)}
+                                  {formatUsd(day.byProvider.get(provider)?.costUsd ?? 0)}
                                 </td>
                               ))}
                               <td className="py-2 text-right text-foreground tabular-nums">
-                                {formatUsd(period.costUsd)}
+                                {formatUsd(day.costUsd)}
                               </td>
                               <td className="py-2 text-right text-muted-foreground tabular-nums">
-                                {formatTokens(period.totalTokens)}
+                                {formatTokens(day.totalTokens)}
                               </td>
                             </tr>
                           ))
@@ -450,7 +384,7 @@ function ProviderMark({
   readonly provider: UsageProviderKind;
   readonly className: string;
 }) {
-  const Mark = PROVIDER_PRESENTATION[provider].mark;
+  const Mark = PROVIDER_MARK[provider];
   return <Mark className={cn("shrink-0", className)} aria-hidden />;
 }
 
@@ -579,7 +513,7 @@ const SKELETON_BAR_HEIGHTS = [34, 58, 41, 72, 22, 12, 49, 63, 80, 38, 55, 26, 44
  * chart and metrics strip. No shimmer; blocks fill in exactly once when the
  * last device answers.
  */
-function UsageSkeleton({ resolution }: { readonly resolution: "day" | "hour" }) {
+function UsageSkeleton() {
   return (
     <>
       <section className="grid gap-6 lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)]">
@@ -597,7 +531,7 @@ function UsageSkeleton({ resolution }: { readonly resolution: "day" | "hour" }) 
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-2 text-sm text-foreground">
                   <ProviderMark provider={provider} className="size-4" />
-                  {PROVIDER_PRESENTATION[provider].label}
+                  {PROVIDER_LABEL[provider]}
                 </span>
                 <div className="h-3.5 w-14 rounded-sm bg-muted" />
               </div>
@@ -608,9 +542,7 @@ function UsageSkeleton({ resolution }: { readonly resolution: "day" | "hour" }) 
         </div>
 
         <div className="flex flex-col gap-3">
-          <h2 className="py-1 text-sm font-medium text-foreground">
-            {resolution === "hour" ? "Hourly" : "Daily"} cost
-          </h2>
+          <h2 className="py-1 text-sm font-medium text-foreground">Daily cost</h2>
           {/* Mirrors the chart's h-56 body and w-14 axis gutter to avoid a
               relayout when the real chart swaps in. */}
           <div className="flex h-56 items-end gap-1 pl-16">

@@ -11,7 +11,7 @@ import { useSavedRemoteConnections } from "../../state/use-remote-environment-re
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import { WorkspaceEmptyDetail } from "../layout/WorkspaceEmptyDetail";
 import { WorkspaceSidebarToolbar } from "../layout/workspace-sidebar-toolbar";
-import { checkForAppUpdateOnLaunch, startAppUpdateForegroundRecheck } from "../updates/app-updates";
+import { checkForAppUpdateOnLaunch } from "../updates/app-updates";
 import { AndroidHomeFabLayout } from "./AndroidHomeFab";
 import { HomeScreen } from "./HomeScreen";
 import { HomeHeader } from "./HomeHeader";
@@ -34,7 +34,6 @@ export function HomeRouteScreen() {
 
   useEffect(() => {
     void checkForAppUpdateOnLaunch();
-    startAppUpdateForegroundRecheck();
   }, []);
 
   const {
@@ -46,7 +45,6 @@ export function HomeRouteScreen() {
     pinThread,
     unpinThread,
     movePinnedThread,
-    regenerateThreadTitle,
     unsettleThread,
   } = useThreadListActions();
   const pendingTasks = usePendingNewTasks();
@@ -136,10 +134,7 @@ export function HomeRouteScreen() {
         <NativeStackScreenOptions
           options={getConnectionAwareBrandHeaderOptions({
             onOpenEnvironments: () =>
-              navigation.navigate("SettingsSheet", {
-                screen: "SettingsContent",
-                params: { screen: "SettingsEnvironments" },
-              }),
+              navigation.navigate("SettingsSheet", { screen: "SettingsEnvironments" }),
           })}
         />
         <HomeHeader
@@ -153,17 +148,9 @@ export function HomeRouteScreen() {
           onEnvironmentChange={setSelectedEnvironmentId}
           onProjectChange={setSelectedProjectKey}
           onOpenEnvironments={() =>
-            navigation.navigate("SettingsSheet", {
-              screen: "SettingsContent",
-              params: { screen: "SettingsEnvironments" },
-            })
+            navigation.navigate("SettingsSheet", { screen: "SettingsEnvironments" })
           }
-          onOpenSettings={() =>
-            navigation.navigate("SettingsSheet", {
-              screen: "SettingsContent",
-              params: { screen: "Settings" },
-            })
-          }
+          onOpenSettings={() => navigation.navigate("SettingsSheet", { screen: "Settings" })}
           onProjectSortOrderChange={setProjectSortOrder}
           onSearchQueryChange={setSearchQuery}
           onStartNewTask={() => navigation.navigate("NewTaskSheet", { screen: "NewTask" })}
@@ -174,10 +161,7 @@ export function HomeRouteScreen() {
           catalogState={catalogState}
           environments={environments}
           onAddConnection={() =>
-            navigation.navigate("SettingsSheet", {
-              screen: "SettingsContent",
-              params: { screen: "SettingsEnvironmentNew" },
-            })
+            navigation.navigate("SettingsSheet", { screen: "SettingsEnvironmentNew" })
           }
           onArchiveThread={archiveThread}
           onDeleteThread={confirmDeleteThread}
@@ -188,15 +172,9 @@ export function HomeRouteScreen() {
           onPinThread={pinThread}
           onUnpinThread={unpinThread}
           onMovePinnedThread={movePinnedThread}
-          onRegenerateThreadTitle={regenerateThreadTitle}
           onEnvironmentChange={setSelectedEnvironmentId}
           onProjectChange={setSelectedProjectKey}
-          onOpenSettings={() =>
-            navigation.navigate("SettingsSheet", {
-              screen: "SettingsContent",
-              params: { screen: "Settings" },
-            })
-          }
+          onOpenSettings={() => navigation.navigate("SettingsSheet", { screen: "Settings" })}
           onProjectSortOrderChange={setProjectSortOrder}
           onSearchQueryChange={setSearchQuery}
           onSelectThread={(thread) => {

@@ -1,17 +1,9 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Keyboard, View } from "react-native";
-import {
-  CommonActions,
-  type NavigationState,
-  type PartialState,
-  StackActions,
-  useNavigation,
-} from "@react-navigation/native";
+import { CommonActions, StackActions, useNavigation } from "@react-navigation/native";
 import { AsyncResult } from "effect/unstable/reactivity";
 
 import { useConnectionController } from "../connection/useConnectionController";
-import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
-import type { MobileThemeId } from "../../lib/mobileTheme";
 import { useProjects, useThreadShells } from "../../state/entities";
 import { enqueueThreadOutboxMessage } from "../../state/thread-outbox";
 import { holdEditingQueuedMessage } from "../../state/use-thread-outbox";
@@ -21,7 +13,6 @@ import {
   getNativeShowcaseOrientation,
   getNativeShowcasePairingUrls,
   getNativeShowcaseScene,
-  getNativeShowcaseTheme,
   markNativeShowcaseReady,
   type ShowcaseScene,
 } from "./nativeShowcaseScene";
@@ -30,17 +21,9 @@ import {
   SHOWCASE_PENDING_TASK_DEFINITIONS,
 } from "./showcasePendingTasks";
 import { retryShowcaseOperation } from "./showcaseRetry";
-import {
-  clearShowcaseRenderSignal,
-  getShowcaseRenderSignal,
-  isShowcaseNativeContentReady,
-  subscribeToShowcaseRenderSignal,
-} from "./showcaseRenderSignal";
 
 const SHOWCASE_ENABLED = process.env.EXPO_PUBLIC_SHOWCASE === "1";
 const SHOWCASE_THREAD_ID = "remote-command-center";
-
-type ShowcaseResetRoute = PartialState<NavigationState>["routes"][number];
 
 function sceneFromPathname(pathname: string): ShowcaseScene | null {
   const routePath = pathname.split(/[?#]/u, 1)[0] ?? pathname;
@@ -57,12 +40,6 @@ function sceneFromPathname(pathname: string): ShowcaseScene | null {
 export function ShowcaseCaptureCoordinator(props: { readonly pathname: string }) {
   const navigation = useNavigation();
   const { connectPairingUrl } = useConnectionController();
-  const {
-    isReady: appearancePreferencesReady,
-    themeId,
-    themeIds,
-    setThemeIdForBothAppearances,
-  } = useAppearancePreferences();
   const workspace = useWorkspaceState();
   const projects = useProjects();
   const threads = useThreadShells();
@@ -71,32 +48,18 @@ export function ShowcaseCaptureCoordinator(props: { readonly pathname: string })
   const [pairingUrls, setPairingUrls] = useState<ReadonlyArray<string>>([]);
   const [pendingTasksReady, setPendingTasksReady] = useState(false);
   const [requestedScene, setRequestedScene] = useState<ShowcaseScene | null>(null);
-  const [requestedTheme, setRequestedTheme] = useState<MobileThemeId | null>(null);
-  const [themeRequestSettled, setThemeRequestSettled] = useState(false);
   const [readyScene, setReadyScene] = useState<ShowcaseScene | null>(null);
   const [orientationSettled, setOrientationSettled] = useState(false);
-  const requestedSceneRef = useRef<ShowcaseScene | null>(null);
-  const renderSignal = useSyncExternalStore(
-    subscribeToShowcaseRenderSignal,
-    getShowcaseRenderSignal,
-    getShowcaseRenderSignal,
-  );
 
   useEffect(() => {
     if (!SHOWCASE_ENABLED || pairingUrls.length > 0) return;
 
-    const readLaunchRequest = () => {
+    const readPairingUrls = () => {
       const values = getNativeShowcasePairingUrls();
-      if (values.length === 0) return;
-      // The palette rides the same launch request as the pairing URLs, so
-      // reading it here settles it without a timeout that could expire while
-      // the request is still on its way.
-      setRequestedTheme(getNativeShowcaseTheme());
-      setThemeRequestSettled(true);
-      setPairingUrls(values);
+      if (values.length > 0) setPairingUrls(values);
     };
-    readLaunchRequest();
-    const interval = setInterval(readLaunchRequest, 250);
+    readPairingUrls();
+    const interval = setInterval(readPairingUrls, 250);
     return () => clearInterval(interval);
   }, [pairingUrls.length]);
 
@@ -124,37 +87,12 @@ export function ShowcaseCaptureCoordinator(props: { readonly pathname: string })
 
     const readRequestedScene = () => {
       const value = getNativeShowcaseScene();
-      if (!value || requestedSceneRef.current === value) return;
-      requestedSceneRef.current = value;
-      // A native draw belongs only to the scene request that produced it. In
-      // particular, revisiting review must wait for its newly mounted surface.
-      clearShowcaseRenderSignal();
-      setRequestedScene(value);
+      if (value) setRequestedScene(value);
     };
     readRequestedScene();
     const interval = setInterval(readRequestedScene, 250);
     return () => clearInterval(interval);
   }, []);
-
-  // Captures pick a palette for both color schemes so the requested theme is
-  // used whichever system appearance the runner set on the device.
-  const themeApplied =
-    requestedTheme === null
-      ? themeRequestSettled
-      : themeIds.light === requestedTheme && themeIds.dark === requestedTheme;
-
-  useEffect(() => {
-    if (
-      !SHOWCASE_ENABLED ||
-      requestedTheme === null ||
-      themeApplied ||
-      // Writing before stored preferences load would be overwritten by them.
-      !appearancePreferencesReady
-    ) {
-      return;
-    }
-    setThemeIdForBothAppearances(requestedTheme);
-  }, [appearancePreferencesReady, requestedTheme, setThemeIdForBothAppearances, themeApplied]);
 
   useEffect(() => {
     if (!SHOWCASE_ENABLED || pairingUrls.length === 0) return;
@@ -228,21 +166,17 @@ export function ShowcaseCaptureCoordinator(props: { readonly pathname: string })
       navigation.dispatch(StackActions.popToTop());
       return;
     }
-    const routes: ShowcaseResetRoute[] = [{ name: "Home" }];
+    const routes: Array<{
+      name: string;
+      params?: Record<string, unknown>;
+      state?: { index: number; routes: Array<{ name: string }> };
+    }> = [{ name: "Home" }];
     if (requestedScene === "environments") {
       routes.push({
         name: "SettingsSheet",
         state: {
-          index: 0,
-          routes: [
-            {
-              name: "SettingsContent",
-              state: {
-                index: 1,
-                routes: [{ name: "Settings" }, { name: "SettingsEnvironments" }],
-              },
-            },
-          ],
+          index: 1,
+          routes: [{ name: "Settings" }, { name: "SettingsEnvironments" }],
         },
       });
     } else {
@@ -273,11 +207,14 @@ export function ShowcaseCaptureCoordinator(props: { readonly pathname: string })
       !hasFixture ||
       // Never report a scene ready while the capture orientation is still
       // being applied — a screenshot taken early has the wrong dimensions.
-      !orientationSettled ||
-      // Likewise for the palette: an early screenshot shows the default theme.
-      !themeApplied ||
-      !isShowcaseNativeContentReady({ scene, themeId, renderSignal })
+      !orientationSettled
     ) {
+      setReadyScene(null);
+      return;
+    }
+    // Review owns its readiness marker because route activation happens before
+    // the VCS request is parsed and the native diff surface is mounted.
+    if (scene === "review") {
       setReadyScene(null);
       return;
     }
@@ -298,7 +235,7 @@ export function ShowcaseCaptureCoordinator(props: { readonly pathname: string })
       if (renderFrame !== null) cancelAnimationFrame(renderFrame);
       if (readyFrame !== null) cancelAnimationFrame(readyFrame);
     };
-  }, [hasFixture, orientationSettled, renderSignal, requestedScene, scene, themeApplied, themeId]);
+  }, [hasFixture, orientationSettled, requestedScene, scene]);
 
   if (!SHOWCASE_ENABLED || readyScene === null) return null;
 

@@ -5,7 +5,6 @@ import { Toggle } from "../ui/toggle";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 interface PanelLayoutControlsProps {
-  showTerminalControl?: boolean;
   terminalAvailable: boolean;
   terminalOpen: boolean;
   terminalShortcutLabel: string | null;
@@ -19,7 +18,6 @@ interface PanelLayoutControlsProps {
 }
 
 export const PanelLayoutControls = memo(function PanelLayoutControls({
-  showTerminalControl = true,
   terminalAvailable,
   terminalOpen,
   terminalShortcutLabel,
@@ -35,30 +33,28 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
       className="flex h-full shrink-0 items-center gap-1 [-webkit-app-region:no-drag]"
       data-panel-layout-controls
     >
-      {showTerminalControl ? (
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Toggle
-                className="shrink-0 [-webkit-app-region:no-drag]"
-                pressed={terminalOpen}
-                onPressedChange={onToggleTerminal}
-                aria-label="Toggle terminal drawer"
-                variant="ghost"
-                size="sm"
-                disabled={!terminalAvailable}
-              >
-                <PanelBottomIcon className="size-4" />
-              </Toggle>
-            }
-          />
-          <TooltipPopup side="bottom">
-            {terminalAvailable
-              ? `Toggle terminal drawer${terminalShortcutLabel ? ` (${terminalShortcutLabel})` : ""}`
-              : "Terminal drawer is unavailable"}
-          </TooltipPopup>
-        </Tooltip>
-      ) : null}
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Toggle
+              className="shrink-0 [-webkit-app-region:no-drag]"
+              pressed={terminalOpen}
+              onPressedChange={onToggleTerminal}
+              aria-label="Toggle terminal drawer"
+              variant="ghost"
+              size="sm"
+              disabled={!terminalAvailable}
+            >
+              <PanelBottomIcon className="size-3.5" />
+            </Toggle>
+          }
+        />
+        <TooltipPopup side="bottom">
+          {terminalAvailable
+            ? `Toggle terminal drawer${terminalShortcutLabel ? ` (${terminalShortcutLabel})` : ""}`
+            : "Terminal drawer is unavailable"}
+        </TooltipPopup>
+      </Tooltip>
       <Tooltip>
         <TooltipTrigger
           render={
@@ -75,7 +71,7 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
               size="sm"
               disabled={!rightPanelAvailable}
             >
-              <PanelRightIcon className="size-4" />
+              <PanelRightIcon className="size-3.5" />
               {liveAgentCount > 0 ? (
                 <span
                   aria-hidden
@@ -122,9 +118,9 @@ export const RightPanelMaximizeControl = memo(function RightPanelMaximizeControl
             size="sm"
           >
             {maximized ? (
-              <Minimize2Icon className="size-4" />
+              <Minimize2Icon className="size-3.5" />
             ) : (
-              <Maximize2Icon className="size-4" />
+              <Maximize2Icon className="size-3.5" />
             )}
           </Toggle>
         }

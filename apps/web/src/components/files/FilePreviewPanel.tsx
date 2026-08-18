@@ -20,7 +20,6 @@ import { isBrowserPreviewFile, openFileInPreview } from "~/browser/openFileInPre
 import { useAssetUrlState } from "~/assets/assetUrls";
 import ChatMarkdown from "~/components/ChatMarkdown";
 import { OpenInPicker } from "~/components/chat/OpenInPicker";
-import { useRemoteOpenState } from "~/remoteOpen";
 import { useClientSettings } from "~/hooks/useSettings";
 import { useTheme } from "~/hooks/useTheme";
 import { getLocalStorageItem, setLocalStorageItem, useLocalStorage } from "~/hooks/useLocalStorage";
@@ -55,7 +54,7 @@ import {
 } from "./fileCommentAnnotations";
 import { installFileEditorDismissal } from "./fileEditorDismissal";
 import { resolveCenteredFileLineScrollTop } from "./fileLineReveal";
-import { DiffCommentAnnotation } from "../diffs/DiffCommentAnnotation";
+import { LocalCommentAnnotation } from "./LocalCommentAnnotation";
 import { projectFileCacheKey, projectFileEditorCacheKey } from "./fileContentRevision";
 import { fileBreadcrumbs } from "./filePath";
 import { isMarkdownPreviewFile, setMarkdownTaskChecked } from "./filePreviewMode";
@@ -681,7 +680,7 @@ function EditableFileSurface({
             renderAnnotation={(annotation) => (
               <div className="py-1">
                 {annotation.metadata.entries.map((entry) => (
-                  <DiffCommentAnnotation
+                  <LocalCommentAnnotation
                     key={entry.id}
                     kind={entry.kind}
                     rangeLabel={formatFileCommentRange(entry.startLine, entry.endLine)}
@@ -774,7 +773,6 @@ export default function FilePreviewPanel({
   const { resolvedTheme } = useTheme();
   const wordWrap = useClientSettings((settings) => settings.wordWrap);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const remoteOpenState = useRemoteOpenState(environmentId);
   const environmentHttpBaseUrl = useEnvironmentHttpBaseUrl(environmentId);
   const createAssetUrl = useAtomQueryRunner(assetEnvironment.createUrl, {
     reportFailure: false,
@@ -891,10 +889,7 @@ export default function FilePreviewPanel({
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
       {relativePath ? (
-        <div
-          className="flex h-10 min-h-10 shrink-0 items-center gap-2 border-b border-border/60 bg-background px-3 in-data-[preview-panel-mode=inline]:mb-3 in-data-[preview-panel-mode=inline]:h-7 in-data-[preview-panel-mode=inline]:min-h-7 in-data-[preview-panel-mode=inline]:border-b-transparent"
-          data-surface-subheader
-        >
+        <div className="surface-subheader gap-2 px-3" data-surface-subheader>
           <ScrollArea
             ref={breadcrumbRef}
             hideScrollbars
@@ -912,31 +907,22 @@ export default function FilePreviewPanel({
                   {index > 0 ? (
                     <ChevronRight className="mx-1 size-3.5 shrink-0 text-muted-foreground/60" />
                   ) : null}
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <span
-                          className={cn(
-                            "max-w-40 truncate",
-                            crumb.kind === "file"
-                              ? "font-medium text-foreground"
-                              : "text-muted-foreground",
-                          )}
-                        />
-                      }
-                    >
-                      {crumb.label}
-                    </TooltipTrigger>
-                    <TooltipPopup side="top" className="max-w-80">
-                      {crumb.path || projectName}
-                    </TooltipPopup>
-                  </Tooltip>
+                  <span
+                    className={cn(
+                      "max-w-40 truncate",
+                      crumb.kind === "file"
+                        ? "font-medium text-foreground"
+                        : "text-muted-foreground",
+                    )}
+                    title={crumb.path || projectName}
+                  >
+                    {crumb.label}
+                  </span>
                 </div>
               ))}
             </div>
           </ScrollArea>
-          {absolutePath &&
-          (environmentId === primaryEnvironmentId || remoteOpenState.mode !== "local-exec") ? (
+          {absolutePath && environmentId === primaryEnvironmentId ? (
             <OpenInPicker
               environmentId={environmentId}
               keybindings={keybindings}
