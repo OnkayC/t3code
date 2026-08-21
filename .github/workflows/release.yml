@@ -30,7 +30,7 @@ jobs:
   check_changes:
     name: Check for changes since last nightly
     if: github.repository_owner != 'OnkayC' && github.event_name == 'schedule'
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     outputs:
       has_changes: ${{ steps.check.outputs.has_changes }}
     steps:
@@ -70,8 +70,8 @@ jobs:
     if: |
       !failure() && !cancelled() &&
       (github.event_name != 'schedule' || needs.check_changes.outputs.has_changes == 'true')
-    runs-on: ${{ github.repository_owner == 'OnkayC' && 'ubuntu-24.04' || 'blacksmith-8vcpu-ubuntu-2404' }}
-    timeout-minutes: ${{ github.repository_owner == 'OnkayC' && 30 || 10 }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     outputs:
       release_channel: ${{ steps.release_meta.outputs.release_channel }}
       version: ${{ steps.release_meta.outputs.version }}
@@ -101,6 +101,7 @@ jobs:
           run-install: true
 
       - name: Ensure Electron runtime is installed
+        if: github.repository_owner != 'OnkayC'
         run: vp run --filter @t3tools/desktop ensure:electron
 
       - id: release_meta
@@ -178,7 +179,7 @@ jobs:
     name: Resolve T3 Connect public config
     needs: preflight
     if: ${{ github.repository_owner != 'OnkayC' && !failure() && !cancelled() && needs.preflight.result == 'success' }}
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     environment:
       name: production
@@ -273,8 +274,8 @@ jobs:
   build_wsl_node_pty:
     name: Build WSL node-pty (linux-x64)
     needs: [preflight]
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' }}
-    runs-on: ${{ github.repository_owner == 'OnkayC' && 'ubuntu-24.04' || 'blacksmith-8vcpu-ubuntu-2404' }}
+    if: ${{ github.repository_owner != 'OnkayC' && !failure() && !cancelled() && needs.preflight.result == 'success' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -328,7 +329,7 @@ jobs:
     needs: [preflight, relay_public_config, build_wsl_node_pty]
     if: ${{ !cancelled() && needs.preflight.result == 'success' && (github.repository_owner == 'OnkayC' || needs.relay_public_config.result == 'success') }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 40
     env:
       T3CODE_CLERK_PUBLISHABLE_KEY: ${{ needs.relay_public_config.outputs.clerk_publishable_key }}
       T3CODE_CLERK_JWT_TEMPLATE: ${{ needs.relay_public_config.outputs.clerk_jwt_template }}
@@ -339,40 +340,30 @@ jobs:
       matrix:
         include:
           - label: macOS arm64
-            runner: ${{ github.repository_owner == 'OnkayC' && 'macos-15' || 'blacksmith-12vcpu-macos-26' }}
+            runner: macos-15
             platform: mac
             target: dmg
             arch: arm64
             rust_target: aarch64-apple-darwin
             resource_key: darwin-arm64
           - label: macOS x64
-            runner: ${{ github.repository_owner == 'OnkayC' && 'macos-15-intel' || 'blacksmith-12vcpu-macos-26' }}
+            runner: macos-15-intel
             platform: mac
             target: dmg
             arch: x64
             rust_target: x86_64-apple-darwin
             resource_key: darwin-x64
           - label: Linux x64
-            runner: ${{ github.repository_owner == 'OnkayC' && 'ubuntu-24.04' || 'blacksmith-32vcpu-ubuntu-2404' }}
+            runner: ubuntu-24.04
             platform: linux
             target: AppImage
             arch: x64
             rust_target: x86_64-unknown-linux-gnu
             resource_key: linux-x64
-          - label: Windows x64
-            runner: ${{ github.repository_owner == 'OnkayC' && 'windows-2025' || 'blacksmith-32vcpu-windows-2025' }}
-            platform: win
-            target: nsis
-            arch: x64
-            rust_target: x86_64-pc-windows-msvc
-            resource_key: win32-x64
-          # - label: Windows arm64
-          #   runner: windows-11-arm
-          #   platform: win
-          #   target: nsis
-          #   arch: arm64
+
     steps:
       - name: Checkout
+        if: github.repository_owner != 'OnkayC' || matrix.platform == 'linux'
         uses: actions/checkout@v6
         with:
           ref: ${{ needs.preflight.outputs.ref }}
@@ -382,6 +373,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Setup Vite+
+        if: github.repository_owner != 'OnkayC' || matrix.platform == 'linux'
         uses: voidzero-dev/setup-vp@v1
         with:
           node-version-file: package.json
@@ -393,6 +385,7 @@ jobs:
               - --filter=@t3tools/scripts...
 
       - name: Setup Rust
+        if: github.repository_owner != 'OnkayC' || matrix.platform == 'linux'
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust_target }}
@@ -414,6 +407,7 @@ jobs:
           cat "$config_path" >> "$GITHUB_ENV"
 
       - name: Align package versions to release version
+        if: github.repository_owner != 'OnkayC' || matrix.platform == 'linux'
         run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
 
       - name: Download WSL node-pty prebuild
@@ -441,7 +435,7 @@ jobs:
           }
 
       - name: Install ImageMagick
-        if: matrix.platform == 'linux'
+        if: github.repository_owner != 'OnkayC' && matrix.platform == 'linux'
         shell: bash
         run: |
           if ! command -v magick >/dev/null 2>&1 && ! command -v convert >/dev/null 2>&1; then
@@ -518,6 +512,7 @@ jobs:
           "PSModulePath=$($modulePathEntries -join ';')" >> $env:GITHUB_ENV
 
       - name: Build desktop artifact
+        if: github.repository_owner != 'OnkayC'
         shell: bash
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -600,6 +595,7 @@ jobs:
           vp run dist:desktop:artifact "${args[@]}"
 
       - name: Collect release assets
+        if: github.repository_owner != 'OnkayC'
         shell: bash
         run: |
           set -euo pipefail
@@ -637,7 +633,16 @@ jobs:
           #   done
           # fi
 
+      - name: Build server bundle
+        if: github.repository_owner == 'OnkayC' && matrix.platform == 'linux'
+        run: vp run --filter t3 build
+
+      - name: Build resource monitor
+        if: github.repository_owner == 'OnkayC' && matrix.platform == 'linux'
+        run: cargo build --manifest-path native/resource-monitor/Cargo.toml --release --target "${{ matrix.rust_target }}"
+
       - name: Collect resource monitor
+        if: github.repository_owner != 'OnkayC' || matrix.platform == 'linux'
         shell: bash
         run: |
           set -euo pipefail
@@ -649,8 +654,25 @@ jobs:
           target_dir="resource-monitor-publish/${{ matrix.resource_key }}"
           mkdir -p "$target_dir"
           cp "$source_path" "$target_dir/$binary_name"
+      - name: Build Mise CLI artifact
+        if: github.repository_owner != 'OnkayC' || matrix.platform == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary_name="t3-resource-monitor"
+          if [[ "${{ matrix.platform }}" == "win" ]]; then
+            binary_name="${binary_name}.exe"
+          fi
+
+          node scripts/build-cli-release-artifact.ts \
+            --version "${{ needs.preflight.outputs.version }}" \
+            --platform "${{ matrix.platform }}" \
+            --arch "${{ matrix.arch }}" \
+            --resource-monitor "native/resource-monitor/target/${{ matrix.rust_target }}/release/${binary_name}" \
+            --output-dir cli-release-publish
 
       - name: Upload build artifacts
+        if: github.repository_owner != 'OnkayC'
         uses: actions/upload-artifact@v7
         with:
           name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
@@ -658,17 +680,25 @@ jobs:
           if-no-files-found: error
 
       - name: Upload resource monitor
+        if: github.repository_owner != 'OnkayC' || matrix.platform == 'linux'
         uses: actions/upload-artifact@v7
         with:
           name: resource-monitor-${{ matrix.resource_key }}
           path: resource-monitor-publish/${{ matrix.resource_key }}/*
+          if-no-files-found: error
+      - name: Upload Mise CLI artifact
+        if: github.repository_owner != 'OnkayC' || matrix.platform == 'linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: cli-${{ matrix.platform }}-${{ matrix.arch }}
+          path: cli-release-publish/t3-cli-*.tar.gz
           if-no-files-found: error
 
   publish_cli:
     name: Publish CLI to npm
     needs: [preflight, relay_public_config, build]
     if: ${{ github.repository_owner != 'OnkayC' && !failure() && !cancelled() && needs.preflight.result == 'success' && needs.relay_public_config.result == 'success' && needs.build.result == 'success' }}
-    runs-on: ubuntu-24.04 # blacksmith-8vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -747,7 +777,7 @@ jobs:
     name: Publish GitHub Release
     needs: [preflight, build, publish_cli]
     if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.build.result == 'success' && (github.repository_owner == 'OnkayC' || needs.publish_cli.result == 'success') }}
-    runs-on: ${{ github.repository_owner == 'OnkayC' && 'ubuntu-24.04' || 'blacksmith-8vcpu-ubuntu-2404' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: write
@@ -771,13 +801,21 @@ jobs:
               - --filter=@t3tools/scripts...
 
       - name: Download all desktop artifacts
+        if: github.repository_owner != 'OnkayC'
         uses: actions/download-artifact@v8
         with:
           pattern: desktop-*
           merge-multiple: true
           path: release-assets
+      - name: Download all CLI artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: cli-*
+          merge-multiple: true
+          path: release-assets
 
       - name: Merge macOS updater manifests
+        if: github.repository_owner != 'OnkayC'
         run: |
           shopt -s nullglob
           for x64_manifest in release-assets/*-mac-x64.yml; do
@@ -835,7 +873,8 @@ jobs:
             release-assets/*.exe
             release-assets/*.blockmap
             release-assets/*.yml
-          fail_on_unmatched_files: true
+            release-assets/t3-cli-*.tar.gz
+          fail_on_unmatched_files: false
           token: ${{ github.token }}
 
       - name: Publish first release
@@ -855,14 +894,53 @@ jobs:
             release-assets/*.exe
             release-assets/*.blockmap
             release-assets/*.yml
-          fail_on_unmatched_files: true
+            release-assets/t3-cli-*.tar.gz
+          fail_on_unmatched_files: false
           token: ${{ github.token }}
+
+  publish_aur:
+    name: Publish AUR package
+    needs: [preflight, release]
+    if: ${{ github.repository_owner != 'OnkayC' && !failure() && !cancelled() && needs.preflight.result == 'success' && needs.release.result == 'success' }}
+    uses: ./.github/workflows/publish-aur.yml
+    with:
+      release_tag: ${{ needs.preflight.outputs.tag }}
+    secrets:
+      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+  verify_mise_cli:
+    name: Verify CLI installation with Mise
+    needs: [preflight, release]
+    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.release.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Setup Mise
+        uses: jdx/mise-action@v4
+        with:
+          install: false
+          cache: false
+
+      - name: Install released CLI
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          mise use -g "github:${GITHUB_REPOSITORY}[matching=t3-cli,prerelease=true]@${RELEASE_VERSION}"
+          actual="$(t3 --version)"
+          expected="t3 v${RELEASE_VERSION}"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "Expected '$expected', got '$actual'." >&2
+            exit 1
+          fi
 
   deploy_web:
     name: Deploy hosted web app
     needs: [preflight, relay_public_config, release]
     if: ${{ github.repository_owner != 'OnkayC' && !failure() && !cancelled() && needs.preflight.result == 'success' && needs.relay_public_config.result == 'success' && needs.release.result == 'success' }}
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
       T3CODE_CLERK_PUBLISHABLE_KEY: ${{ needs.relay_public_config.outputs.clerk_publishable_key }}
@@ -981,7 +1059,7 @@ jobs:
     name: Finalize release
     if: ${{ github.repository_owner != 'OnkayC' && !failure() && !cancelled() && needs.preflight.result == 'success' && needs.release.result == 'success' && needs.preflight.outputs.release_channel == 'stable' }}
     needs: [preflight, release]
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - id: app_token
@@ -1067,7 +1145,7 @@ jobs:
       needs.deploy_web.result == 'success' &&
       (needs.finalize.result == 'success' || needs.finalize.result == 'skipped')
     needs: [preflight, relay_public_config, release, deploy_web, finalize]
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Checkout

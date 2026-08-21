@@ -101,6 +101,13 @@ function isNodeWithinMenuStack(target: EventTarget | null, menuStack: readonly H
   return false;
 }
 
+let activeContextMenuDismiss: (() => void) | null = null;
+
+export function dismissContextMenu(): void {
+  activeContextMenuDismiss?.();
+  activeContextMenuDismiss = null;
+}
+
 /**
  * Imperative DOM-based context menu for non-Electron environments.
  * Supports nested submenus and resolves with the clicked leaf item id.
@@ -113,10 +120,14 @@ export function showContextMenuFallback<T extends string>(
     const menuStack: HTMLDivElement[] = [];
     let isDisposed = false;
     let canDismissFromPointer = false;
+    const dismiss = () => cleanup(null);
 
     const cleanup = (result: T | null) => {
       if (isDisposed) {
         return;
+      }
+      if (activeContextMenuDismiss === dismiss) {
+        activeContextMenuDismiss = null;
       }
       isDisposed = true;
       document.removeEventListener("keydown", onKeyDown);
@@ -299,6 +310,8 @@ export function showContextMenuFallback<T extends string>(
     document.addEventListener("pointerdown", onPointerDown, true);
     document.addEventListener("contextmenu", onContextMenu, true);
     openMenu(items, position?.x ?? 0, position?.y ?? 0, 0);
+    activeContextMenuDismiss?.();
+    activeContextMenuDismiss = dismiss;
 
     requestAnimationFrame(() => {
       canDismissFromPointer = true;

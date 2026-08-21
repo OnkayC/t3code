@@ -5,6 +5,7 @@ import noGlobalProcessRuntime from "./rules/no-global-process-runtime.ts";
 import noInlineSchemaCompile from "./rules/no-inline-schema-compile.ts";
 import noOmpAcpDependency from "./rules/no-omp-acp-dependency.ts";
 import noManualEffectRuntimeInTests from "./rules/no-manual-effect-runtime-in-tests.ts";
+import noNativeTitleTooltip from "./rules/no-native-title-tooltip.ts";
 
 export default definePlugin({
   meta: {
@@ -16,5 +17,6 @@ export default definePlugin({
     "no-inline-schema-compile": noInlineSchemaCompile,
     "no-omp-acp-dependency": noOmpAcpDependency,
     "no-manual-effect-runtime-in-tests": noManualEffectRuntimeInTests,
+    "no-native-title-tooltip": noNativeTitleTooltip,
   },
 });

@@ -123,9 +123,7 @@ export function DraftHeroHeadline({
           {projectPickerEntries.map(({ group }) => {
             return (
               <MenuRadioItem key={group.projectKey} value={group.projectKey} closeOnClick>
-                <span className="block min-w-0 truncate" title={group.displayName}>
-                  {group.displayName}
-                </span>
+                <span className="block min-w-0 truncate">{group.displayName}</span>
               </MenuRadioItem>
             );
           })}

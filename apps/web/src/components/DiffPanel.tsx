@@ -819,7 +819,6 @@ export default function DiffPanel({
         {selectedTurnId === null && selectedGitScope === "branch" && selectedGitSource?.baseRef && (
           <div
             className="flex min-w-0 max-w-full items-center gap-2 overflow-hidden text-xs text-muted-foreground"
-            title={`${selectedGitSource.headRef ?? "HEAD"} → ${selectedGitSource.baseRef}`}
             aria-label={`Comparing ${selectedGitSource.headRef ?? "HEAD"} against ${selectedGitSource.baseRef}`}
           >
             <span className="min-w-0 max-w-48 truncate">{selectedGitSource.headRef ?? "HEAD"}</span>
@@ -913,10 +912,7 @@ export default function DiffPanel({
                               />
                             </div>
                           ) : choice.remote ? (
-                            <span
-                              className="flex justify-end text-muted-foreground"
-                              title="Remote only"
-                            >
+                            <span className="flex justify-end text-muted-foreground">
                               <CheckIcon aria-hidden="true" className="size-3" />
                             </span>
                           ) : null}

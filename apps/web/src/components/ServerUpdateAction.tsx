@@ -45,9 +45,7 @@ export function ServerUpdateProgress({
     return (
       <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-destructive" role="alert">
         <span className="size-1.5 shrink-0 rounded-full bg-destructive" aria-hidden="true" />
-        <span className="min-w-0 truncate" title={state.message}>
-          {state.message}
-        </span>
+        <span className="min-w-0 truncate">{state.message}</span>
       </div>
     );
   }

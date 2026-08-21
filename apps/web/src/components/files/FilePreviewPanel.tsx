@@ -914,7 +914,6 @@ export default function FilePreviewPanel({
                         ? "font-medium text-foreground"
                         : "text-muted-foreground",
                     )}
-                    title={crumb.path || projectName}
                   >
                     {crumb.label}
                   </span>
