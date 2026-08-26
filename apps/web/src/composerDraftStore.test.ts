@@ -66,6 +66,7 @@ import {
   markPromotedDraftThreads,
   markPromotedDraftThreadsByRef,
   type ComposerImageAttachment,
+  type ComposerDraftStoreState,
   useComposerDraftStore,
   DraftId,
 } from "./composerDraftStore";
@@ -858,6 +859,25 @@ describe("composerDraftStore project draft thread mapping", () => {
     expect(useComposerDraftStore.getState().getComposerDraft(draftId)?.prompt).toBe(
       "keep this prompt",
     );
+  });
+
+  it("updates an existing draft mapping when only its branch changes", () => {
+    const store = useComposerDraftStore.getState();
+    store.setProjectDraftThreadId(projectRef, draftId, {
+      threadId,
+      branch: "main",
+      worktreePath: null,
+      envMode: "worktree",
+    });
+
+    store.setProjectDraftThreadId(projectRef, draftId, {
+      threadId,
+      branch: "feature/next",
+      worktreePath: null,
+      envMode: "worktree",
+    });
+
+    expect(useComposerDraftStore.getState().getDraftThread(draftId)?.branch).toBe("feature/next");
   });
 
   it("clears only matching project draft mapping entries", () => {
@@ -1762,6 +1782,51 @@ describe("composerDraftStore runtime and interaction settings", () => {
     store.setInteractionMode(threadRef, "plan");
 
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.interactionMode).toBe("plan");
+  });
+
+  it("stores and restores plan-paused interaction mode", () => {
+    const store = useComposerDraftStore.getState();
+    store.setInteractionMode(threadRef, "plan-paused", "parallel");
+
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toMatchObject({
+      interactionMode: "plan-paused",
+      workflow: "parallel",
+    });
+
+    const persistApi = useComposerDraftStore.persist as unknown as {
+      getOptions: () => {
+        merge: (
+          persistedState: unknown,
+          currentState: ComposerDraftStoreState,
+        ) => ComposerDraftStoreState;
+      };
+    };
+    const projectId = ProjectId.make("project-settings");
+    const mergedState = persistApi.getOptions().merge(
+      {
+        draftThreadsByThreadId: {
+          [threadId]: {
+            threadId,
+            environmentId: TEST_ENVIRONMENT_ID,
+            projectId,
+            createdAt: "2026-03-30T00:00:00.000Z",
+            runtimeMode: "approval-required",
+            interactionMode: "plan-paused",
+            workflow: "parallel",
+            branch: null,
+            worktreePath: null,
+            envMode: "local",
+            startFromOrigin: false,
+          },
+        },
+      },
+      useComposerDraftStore.getInitialState(),
+    );
+
+    expect(mergedState.draftThreadsByThreadKey[threadKeyFor(threadId)]).toMatchObject({
+      interactionMode: "plan-paused",
+      workflow: "parallel",
+    });
   });
 
   it("removes empty settings-only drafts when overrides are cleared", () => {

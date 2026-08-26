@@ -3,6 +3,7 @@ import {
   type MessageId,
   type ScopedThreadRef,
   type ServerProviderSkill,
+  type ProviderPlanReviewDecision,
   type TurnId,
 } from "@t3tools/contracts";
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
@@ -35,6 +36,11 @@ import { FileDiff } from "@pierre/diffs/react";
 import {
   deriveTimelineEntries,
   workEntryDisplayIndicatesToolFailure,
+  type PendingPlanReview,
+  planReviewMatchesProposedPlan,
+  workEntryIndicatesToolFailure,
+  workEntryIndicatesToolNeutralStatus,
+  workEntryIndicatesToolSuccess,
   workLogEntryIsToolLike,
 } from "../../session-logic";
 import { type TurnDiffSummary } from "../../types";
@@ -147,6 +153,9 @@ interface TimelineRowSharedState {
   onToggleWorkGroup: (groupId: string, anchorKey: string) => void;
   agentPanelModel: AgentPanelModel;
   onOpenAgents: () => void;
+  pendingPlanReview: PendingPlanReview | null;
+  isPlanReviewResponding: boolean;
+  onRespondToPlanReview: (decision: ProviderPlanReviewDecision) => void;
 }
 
 interface TimelineRowActivityState {
@@ -206,6 +215,9 @@ const TIMELINE_MAINTAIN_SCROLL_AT_END = {
 interface MessagesTimelineProps {
   agentPanelModel?: AgentPanelModel;
   onOpenAgents?: () => void;
+  pendingPlanReview?: PendingPlanReview | null;
+  isPlanReviewResponding?: boolean;
+  onRespondToPlanReview?: (decision: ProviderPlanReviewDecision) => void;
   isWorking: boolean;
   workingStepLabel?: string | null;
   activeTurnStartedAt: string | null;
@@ -254,6 +266,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   activeTurnStartedAt,
   agentPanelModel = EMPTY_AGENT_PANEL_MODEL,
   onOpenAgents = NOOP_OPEN_AGENTS,
+  pendingPlanReview = null,
+  isPlanReviewResponding = false,
+  onRespondToPlanReview = NOOP_OPEN_AGENTS,
   listRef,
   timelineEntries,
   latestTurn,
@@ -430,6 +445,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     ],
   );
   const rows = useStableRows(rawRows);
+  const standalonePendingPlanReview = useMemo(() => {
+    if (!pendingPlanReview) {
+      return null;
+    }
+    const hasMatchingProposedPlan = timelineEntries.some(
+      (entry) =>
+        entry.kind === "proposed-plan" &&
+        planReviewMatchesProposedPlan(pendingPlanReview, entry.proposedPlan),
+    );
+    return hasMatchingProposedPlan ? null : pendingPlanReview;
+  }, [pendingPlanReview, timelineEntries]);
   const minimapItems = useMemo(() => deriveTimelineMinimapItems(rows), [rows]);
   const [timelineViewportElement, setTimelineViewportElement] = useState<HTMLDivElement | null>(
     null,
@@ -528,6 +554,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onToggleWorkGroup,
       agentPanelModel,
       onOpenAgents,
+      pendingPlanReview,
+      isPlanReviewResponding,
+      onRespondToPlanReview,
     }),
     [
       timestampFormat,
@@ -544,6 +573,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onToggleWorkGroup,
       agentPanelModel,
       onOpenAgents,
+      pendingPlanReview,
+      isPlanReviewResponding,
+      onRespondToPlanReview,
     ],
   );
   const activityState = useMemo<TimelineRowActivityState>(
@@ -567,7 +599,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [],
   );
 
-  if (rows.length === 0 && !isWorking) {
+  if (rows.length === 0 && !isWorking && !standalonePendingPlanReview) {
     if (hideEmptyPlaceholder) {
       return null;
     }
@@ -616,7 +648,16 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                 TIMELINE_LIST_HEADER
               )
             }
-            ListFooterComponent={TIMELINE_LIST_FOOTER}
+            ListFooterComponent={
+              standalonePendingPlanReview ? (
+                <Fragment>
+                  <PendingPlanReviewTimelineRow planReview={standalonePendingPlanReview} />
+                  {TIMELINE_LIST_FOOTER}
+                </Fragment>
+              ) : (
+                TIMELINE_LIST_FOOTER
+              )
+            }
           />
           <TimelineMinimap
             items={minimapItems}
@@ -1199,13 +1240,51 @@ function ProposedPlanTimelineRow({
   const ctx = use(TimelineRowCtx);
 
   return (
+    <PlanTimelineCard
+      planMarkdown={row.proposedPlan.planMarkdown}
+      planReview={
+        ctx.pendingPlanReview &&
+        planReviewMatchesProposedPlan(ctx.pendingPlanReview, row.proposedPlan)
+          ? ctx.pendingPlanReview
+          : null
+      }
+    />
+  );
+}
+
+function PendingPlanReviewTimelineRow({ planReview }: { planReview: PendingPlanReview }) {
+  return (
+    <div
+      className="mx-auto w-full min-w-0 max-w-3xl overflow-x-clip pb-4"
+      data-timeline-root="true"
+      data-timeline-row-id={`pending-plan-review:${planReview.requestId}`}
+      data-timeline-row-kind="proposed-plan"
+    >
+      <PlanTimelineCard planMarkdown={planReview.planMarkdown} planReview={planReview} />
+    </div>
+  );
+}
+
+function PlanTimelineCard({
+  planMarkdown,
+  planReview,
+}: {
+  planMarkdown: string;
+  planReview: PendingPlanReview | null;
+}) {
+  const ctx = use(TimelineRowCtx);
+
+  return (
     <div className="min-w-0 px-1 py-0.5">
       <ProposedPlanCard
-        planMarkdown={row.proposedPlan.planMarkdown}
+        planMarkdown={planMarkdown}
         environmentId={ctx.activeThreadEnvironmentId}
         threadRef={ctx.threadRef ?? undefined}
         cwd={ctx.markdownCwd}
         workspaceRoot={ctx.workspaceRoot}
+        planReview={planReview}
+        isReviewResponding={ctx.isPlanReviewResponding}
+        onRespondToPlanReview={ctx.onRespondToPlanReview}
       />
     </div>
   );

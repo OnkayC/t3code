@@ -25,10 +25,14 @@ import {
   hasServerAcknowledgedLocalDispatch,
   isBranchMismatchDismissedForSession,
   reconcileMountedTerminalThreadIds,
+  reconcileCancellingQueuedTurnIds,
   reconcileRetainedMountedThreadIds,
   resolveBackgroundDraftWorkspaceOptions,
   resolveDraftPromotionNavigationTarget,
   resolveThreadMetadataUpdateForNextTurn,
+  resolveComposerTurnDeliveryMode,
+  resolveComposerInteractionMode,
+  resolveComposerPlanWorkflow,
   resolveSendEnvMode,
   resolveDraftHeroState,
   scheduleEnvironmentReconnectWarning,
@@ -314,6 +318,28 @@ describe("buildLoadingThreadFromShell", () => {
       activities: [],
       checkpoints: [],
     });
+  });
+});
+
+describe("resolveComposerInteractionMode", () => {
+  it("keeps the projected paused mode authoritative over stale local composer state", () => {
+    expect(
+      resolveComposerInteractionMode({
+        isServerThread: true,
+        composerInteractionMode: "plan",
+        threadInteractionMode: "plan-paused",
+      }),
+    ).toBe("plan-paused");
+  });
+
+  it("uses the local composer mode before a draft is promoted", () => {
+    expect(
+      resolveComposerInteractionMode({
+        isServerThread: false,
+        composerInteractionMode: "plan-paused",
+        threadInteractionMode: "default",
+      }),
+    ).toBe("plan-paused");
   });
 });
 
@@ -724,6 +750,63 @@ describe("startNewThreadForProject", () => {
       }),
     ).toBe(false);
     expect(called).toBe(false);
+  });
+});
+
+describe("resolveComposerTurnDeliveryMode", () => {
+  const omp = {
+    supportedTurnDeliveryModes: ["steer", "follow-up"],
+  } as const;
+
+  it("queues a native follow-up for a supported busy provider", () => {
+    expect(resolveComposerTurnDeliveryMode({ phase: "running", provider: omp })).toBe("follow-up");
+  });
+
+  it("does not queue a follow-up when a runtime-mode change would replace the active session", () => {
+    expect(
+      resolveComposerTurnDeliveryMode({
+        phase: "running",
+        provider: omp,
+        wouldReplaceActiveSession: true,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("leaves ready sends and unsupported busy sends on their existing defaults", () => {
+    expect(resolveComposerTurnDeliveryMode({ phase: "ready", provider: omp })).toBeUndefined();
+    expect(
+      resolveComposerTurnDeliveryMode({
+        phase: "running",
+        provider: { supportedTurnDeliveryModes: ["steer"] },
+      }),
+    ).toBeUndefined();
+  });
+});
+
+describe("resolveComposerPlanWorkflow", () => {
+  it("uses projected workflow for server threads and local override for drafts", () => {
+    expect(
+      resolveComposerPlanWorkflow({
+        isServerThread: true,
+        composerPlanWorkflow: "parallel",
+        threadPlanWorkflow: "iterative",
+      }),
+    ).toBe("iterative");
+    expect(
+      resolveComposerPlanWorkflow({
+        isServerThread: false,
+        composerPlanWorkflow: "parallel",
+        threadPlanWorkflow: "iterative",
+      }),
+    ).toBe("parallel");
+  });
+});
+
+describe("reconcileCancellingQueuedTurnIds", () => {
+  it("retains guards for visible queued turns and releases removed turns", () => {
+    const current = ["turn-1", "turn-2"];
+    expect(reconcileCancellingQueuedTurnIds(current, ["turn-1", "turn-2"])).toBe(current);
+    expect(reconcileCancellingQueuedTurnIds(current, ["turn-2"])).toEqual(["turn-2"]);
   });
 });
 

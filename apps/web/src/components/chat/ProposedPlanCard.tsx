@@ -1,9 +1,15 @@
-import { memo, useState, useId } from "react";
+import { memo, useEffect, useState, useId } from "react";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
+import {
+  TurnId,
+  type EnvironmentId,
+  type ProviderPlanReviewContextStrategy,
+  type ProviderPlanReviewDecision,
+  type ScopedThreadRef,
+} from "@t3tools/contracts";
 import {
   buildCollapsedProposedPlanPreviewMarkdown,
   buildProposedPlanMarkdownFilename,
@@ -16,6 +22,9 @@ import ChatMarkdown from "../ChatMarkdown";
 import { EllipsisIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { Textarea } from "../ui/textarea";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import type { PendingPlanReview } from "../../session-logic";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { cn } from "~/lib/utils";
 import { Badge } from "../ui/badge";
@@ -39,17 +48,40 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
   threadRef,
   cwd,
   workspaceRoot,
+  planReview,
+  isReviewResponding = false,
+  onRespondToPlanReview,
 }: {
   planMarkdown: string;
   environmentId: EnvironmentId;
   threadRef?: ScopedThreadRef | undefined;
   cwd: string | undefined;
   workspaceRoot: string | undefined;
+  planReview?: PendingPlanReview | null;
+  isReviewResponding?: boolean;
+  onRespondToPlanReview?: (decision: ProviderPlanReviewDecision) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [isSaveDialogOpen, setIsSaveDialogOpen] = useState(false);
   const [savePath, setSavePath] = useState("");
   const [isSavingToWorkspace, setIsSavingToWorkspace] = useState(false);
+  const [reviewContext, setReviewContext] = useState<ProviderPlanReviewContextStrategy>(
+    planReview?.allowedContextStrategies[0] ?? "fresh",
+  );
+  const [executionModelKey, setExecutionModelKey] = useState(() => {
+    const model = planReview?.defaultExecutionModel ?? planReview?.executionModels[0];
+    return model ? `${model.provider}:${model.modelId}:${model.thinkingLevel ?? ""}` : "";
+  });
+  const [refineFeedback, setRefineFeedback] = useState("");
+  useEffect(() => {
+    setReviewContext(planReview?.allowedContextStrategies[0] ?? "fresh");
+    const model = planReview?.defaultExecutionModel ?? planReview?.executionModels[0];
+    setExecutionModelKey(
+      model ? `${model.provider}:${model.modelId}:${model.thinkingLevel ?? ""}` : "",
+    );
+    setRefineFeedback("");
+  }, [planReview?.requestId]);
+
   const writeProjectFile = useAtomCommand(projectEnvironment.writeFile, {
     reportFailure: false,
   });
@@ -203,6 +235,145 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
           </div>
         ) : null}
       </div>
+
+      {planReview && onRespondToPlanReview ? (
+        <div className="mt-5 border-t border-border/70 pt-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <p className="text-sm font-medium text-foreground">Review this plan</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Execute, request a refinement, or cancel without leaving this thread.
+              </p>
+            </div>
+            {(() => {
+              // Allow only http(s) artifact links — never javascript:/file:/local: schemes.
+              const raw = planReview.planArtifactUrl;
+              if (typeof raw !== "string" || raw.length === 0) return null;
+              try {
+                const parsed = new URL(raw);
+                if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+                return (
+                  <a
+                    href={parsed.href}
+                    className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+                  >
+                    Open artifact
+                  </a>
+                );
+              } catch {
+                return null;
+              }
+            })()}
+          </div>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <label className="grid gap-1.5 text-xs font-medium text-foreground">
+              Execution context
+              <Select
+                value={reviewContext}
+                onValueChange={(value) => value && setReviewContext(value)}
+                disabled={isReviewResponding}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectPopup>
+                  {planReview.allowedContextStrategies.map((strategy) => (
+                    <SelectItem key={strategy} value={strategy}>
+                      {strategy === "fresh"
+                        ? "Fresh context"
+                        : strategy === "preserve"
+                          ? "Preserve context"
+                          : "Compact, then execute"}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            </label>
+            {planReview.executionModels.length > 0 ? (
+              <label className="grid gap-1.5 text-xs font-medium text-foreground">
+                Execution model
+                <Select
+                  value={executionModelKey}
+                  onValueChange={(value) => value && setExecutionModelKey(value)}
+                  disabled={isReviewResponding}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Default model" />
+                  </SelectTrigger>
+                  <SelectPopup>
+                    {planReview.executionModels.map((model) => {
+                      const key = `${model.provider}:${model.modelId}:${model.thinkingLevel ?? ""}`;
+                      return (
+                        <SelectItem key={key} value={key}>
+                          {model.provider} / {model.modelId}
+                          {model.thinkingLevel ? ` · ${model.thinkingLevel}` : ""}
+                        </SelectItem>
+                      );
+                    })}
+                  </SelectPopup>
+                </Select>
+              </label>
+            ) : null}
+          </div>
+          <div className="mt-3 flex flex-wrap justify-end gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={isReviewResponding}
+              onClick={() => onRespondToPlanReview({ action: "cancel" })}
+            >
+              Cancel review
+            </Button>
+            <Button
+              size="sm"
+              disabled={isReviewResponding}
+              onClick={() => {
+                const executionModel = planReview.executionModels.find(
+                  (model) =>
+                    `${model.provider}:${model.modelId}:${model.thinkingLevel ?? ""}` ===
+                    executionModelKey,
+                );
+                onRespondToPlanReview({
+                  action: "execute",
+                  context: reviewContext,
+                  ...(executionModel ? { executionModel } : {}),
+                  clientTurnId: TurnId.make(
+                    `turn-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+                  ),
+                });
+              }}
+            >
+              Execute plan
+            </Button>
+          </div>
+          <div className="mt-4 grid gap-2">
+            <Textarea
+              value={refineFeedback}
+              onChange={(event) => setRefineFeedback(event.target.value)}
+              placeholder="What should change before execution?"
+              disabled={isReviewResponding}
+              className="min-h-20 resize-y text-sm"
+            />
+            <Button
+              size="sm"
+              variant="outline"
+              className="justify-self-end"
+              disabled={isReviewResponding || refineFeedback.trim().length === 0}
+              onClick={() =>
+                onRespondToPlanReview({
+                  action: "refine",
+                  feedback: refineFeedback.trim(),
+                  clientTurnId: TurnId.make(
+                    `turn-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+                  ),
+                })
+              }
+            >
+              Request refinement
+            </Button>
+          </div>
+        </div>
+      ) : null}
 
       <Dialog
         open={isSaveDialogOpen}

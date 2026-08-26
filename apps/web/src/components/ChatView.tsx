@@ -8,7 +8,9 @@ import {
   type ProjectScript,
   type ProjectId,
   type ProviderApprovalDecision,
-  type ProviderUserInputAnswer,
+  type ProviderPlanReviewDecision,
+  type ProviderPlanWorkflow,
+  type ProviderUserInputResponse,
   type PreviewAnnotationPayload,
   ProviderInstanceId,
   type ServerProvider,
@@ -82,6 +84,12 @@ import {
   squashAtomCommandFailure,
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
+import {
+  createPlanReviewResponseCoordinator,
+  foldProviderInteractionActivities,
+  samePlanReviewResponseScope,
+  type PlanReviewResponseScope,
+} from "@t3tools/client-runtime/state/providerInteractionRuntime";
 import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/unstable/reactivity";
@@ -96,6 +104,7 @@ import {
 import {
   derivePendingApprovals,
   derivePendingUserInputs,
+  derivePendingPlanReview,
   derivePhase,
   deriveTimelineEntries,
   deriveActiveWorkStartedAt,
@@ -111,7 +120,9 @@ import { getAnchoredTurnMetrics, type TimelineScrollMode } from "./chat/timeline
 import {
   buildPendingUserInputAnswers,
   derivePendingUserInputProgress,
+  pendingUserInputAllowsSubmit,
   setPendingUserInputCustomAnswer,
+  setPendingUserInputNote,
   togglePendingUserInputOptionSelection,
   type PendingUserInputDraftAnswer,
 } from "../pendingUserInput";
@@ -358,6 +369,10 @@ import {
   resolveBackgroundDraftWorkspaceOptions,
   resolveDraftHeroState,
   resolveThreadMetadataUpdateForNextTurn,
+  resolveComposerTurnDeliveryMode,
+  reconcileCancellingQueuedTurnIds,
+  resolveComposerInteractionMode,
+  resolveComposerPlanWorkflow,
   resolveSendEnvMode,
   revokeBlobPreviewUrl,
   revokeUserMessagePreviewUrls,
@@ -1305,10 +1320,16 @@ function ChatViewContent(props: ChatViewProps) {
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
+  const cancelQueuedThreadTurn = useAtomCommand(threadEnvironment.cancelQueuedTurn, {
+    reportFailure: false,
+  });
   const respondToThreadApproval = useAtomCommand(threadEnvironment.respondToApproval, {
     reportFailure: false,
   });
   const respondToThreadUserInput = useAtomCommand(threadEnvironment.respondToUserInput, {
+    reportFailure: false,
+  });
+  const respondToThreadPlanReview = useAtomCommand(threadEnvironment.respondToPlanReview, {
     reportFailure: false,
   });
   const revertThreadCheckpoint = useAtomCommand(threadEnvironment.revertCheckpoint, {
@@ -1377,6 +1398,9 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const composerInteractionMode = useComposerDraftStore(
     (store) => store.getComposerDraft(composerDraftTarget)?.interactionMode ?? null,
+  );
+  const composerPlanWorkflow = useComposerDraftStore(
+    (store) => store.getComposerDraft(composerDraftTarget)?.workflow ?? null,
   );
   const composerActiveProvider = useComposerDraftStore(
     (store) => store.getComposerDraft(composerDraftTarget)?.activeProvider ?? null,
@@ -1458,6 +1482,12 @@ function ChatViewContent(props: ChatViewProps) {
     window.addEventListener("dragend", clearWorkspaceFileDrag);
     return () => window.removeEventListener("dragend", clearWorkspaceFileDrag);
   }, [isWorkspaceFileDragActive]);
+  // Keep every env/thread/request scope visible while its response is in flight;
+  // switching threads must not re-enable a card the coordinator still guards.
+  const [respondingPlanReviewScopes, setRespondingPlanReviewScopes] = useState<
+    ReadonlyArray<PlanReviewResponseScope>
+  >([]);
+  const [planReviewResponseCoordinator] = useState(createPlanReviewResponseCoordinator);
   const [pendingUserInputAnswersByRequestId, setPendingUserInputAnswersByRequestId] = useState<
     Record<string, Record<string, PendingUserInputDraftAnswer>>
   >({});
@@ -1610,6 +1640,11 @@ function ChatViewContent(props: ChatViewProps) {
   // depend on which route is mounted.
   const isServerThread = activeServerThread !== null;
   const activeThread = activeServerThread ?? localDraftThread;
+  const planWorkflow = resolveComposerPlanWorkflow({
+    isServerThread,
+    composerPlanWorkflow,
+    threadPlanWorkflow: activeThread?.workflow,
+  });
   const threadError = isServerThread
     ? (localServerError ?? activeServerThread?.session?.lastError ?? null)
     : localDraftError;
@@ -1632,13 +1667,13 @@ function ChatViewContent(props: ChatViewProps) {
   // the branch mismatch banner.
   const [, setThreadErrorBannerDismissTick] = useState(0);
   const runtimeMode = composerRuntimeMode ?? activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE;
-  // Plan mode is legacy (Settings → Beta). With the flag off the effective
-  // mode is forced to "default" — even for threads with a stored plan mode —
-  // so nobody is trapped in plan mode while its toggle is hidden. The next
-  // send persists "default" back to the thread.
-  const interactionMode = settings.planModeEnabled
-    ? (composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE)
-    : DEFAULT_INTERACTION_MODE;
+  // Projected interaction mode is authoritative across devices. Provider
+  // capability filtering belongs in the composer controls, not in thread state.
+  const interactionMode = resolveComposerInteractionMode({
+    isServerThread,
+    composerInteractionMode,
+    threadInteractionMode: activeThread?.interactionMode,
+  });
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
   const activeThreadId = activeThread?.id ?? null;
@@ -2342,17 +2377,85 @@ function ChatViewContent(props: ChatViewProps) {
     () => derivePendingUserInputs(threadActivities),
     [threadActivities],
   );
+  const pendingPlanReview = useMemo(
+    () => derivePendingPlanReview(threadActivities),
+    [threadActivities],
+  );
+  const providerInteractionState = useMemo(
+    () => foldProviderInteractionActivities(threadActivities),
+    [threadActivities],
+  );
+  const queuedTurns = providerInteractionState.queuedTurns;
+  const [cancellingQueuedTurnIds, setCancellingQueuedTurnIds] = useState<ReadonlyArray<string>>([]);
+  useEffect(() => {
+    setCancellingQueuedTurnIds((current) =>
+      reconcileCancellingQueuedTurnIds(
+        current,
+        queuedTurns.map((queuedTurn) => queuedTurn.turnId),
+      ),
+    );
+  }, [queuedTurns]);
+  useEffect(() => {
+    if (!activeThreadId) return;
+    if (
+      planReviewResponseCoordinator.reconcile({
+        environmentId,
+        threadId: activeThreadId,
+        requestId: pendingPlanReview?.requestId ?? null,
+      })
+    ) {
+      setRespondingPlanReviewScopes((current) =>
+        current.filter(
+          (scope) =>
+            scope.environmentId !== environmentId ||
+            scope.threadId !== activeThreadId ||
+            scope.requestId === pendingPlanReview?.requestId,
+        ),
+      );
+    }
+  }, [activeThreadId, environmentId, pendingPlanReview, planReviewResponseCoordinator]);
+  // Reactor respond.failed is nonterminal (review stays open). Release the
+  // in-flight guard so the card is retryable after timeouts/errors.
+  useEffect(() => {
+    if (!activeThreadId) return;
+    const failure = providerInteractionState.lastPlanReviewRespondFailure;
+    if (!failure) return;
+    const responseScope: PlanReviewResponseScope = {
+      environmentId,
+      threadId: activeThreadId,
+      requestId: failure.requestId,
+    };
+    if (planReviewResponseCoordinator.fail(responseScope)) {
+      setRespondingPlanReviewScopes((current) =>
+        current.filter((scope) => !samePlanReviewResponseScope(scope, responseScope)),
+      );
+    }
+  }, [
+    activeThreadId,
+    environmentId,
+    planReviewResponseCoordinator,
+    providerInteractionState.lastPlanReviewRespondFailure,
+  ]);
+
+  const userInputDraftKey = useCallback(
+    (requestId: string) => `${environmentId}:${activeThreadId ?? "none"}:${requestId}`,
+    [activeThreadId, environmentId],
+  );
+
   const activePendingUserInput = pendingUserInputs[0] ?? null;
   const activePendingDraftAnswers = useMemo(
     () =>
       activePendingUserInput
-        ? (pendingUserInputAnswersByRequestId[activePendingUserInput.requestId] ??
-          EMPTY_PENDING_USER_INPUT_ANSWERS)
+        ? (pendingUserInputAnswersByRequestId[
+            userInputDraftKey(activePendingUserInput.requestId)
+          ] ?? EMPTY_PENDING_USER_INPUT_ANSWERS)
         : EMPTY_PENDING_USER_INPUT_ANSWERS,
-    [activePendingUserInput, pendingUserInputAnswersByRequestId],
+    [activePendingUserInput, pendingUserInputAnswersByRequestId, userInputDraftKey],
   );
   const activePendingQuestionIndex = activePendingUserInput
-    ? (pendingUserInputQuestionIndexByRequestId[activePendingUserInput.requestId] ?? 0)
+    ? (pendingUserInputQuestionIndexByRequestId[
+        userInputDraftKey(activePendingUserInput.requestId)
+      ] ?? 0)
     : 0;
   const activePendingProgress = useMemo(
     () =>
@@ -3430,26 +3533,38 @@ function ChatViewContent(props: ChatViewProps) {
   );
 
   const handleInteractionModeChange = useCallback(
-    (mode: ProviderInteractionMode) => {
-      if (mode === interactionMode) return;
-      setComposerDraftInteractionMode(composerDraftTarget, mode);
+    (mode: ProviderInteractionMode, workflow?: ProviderPlanWorkflow) => {
+      if (mode === interactionMode && workflow === undefined) return;
+      setComposerDraftInteractionMode(composerDraftTarget, mode, workflow);
       if (isLocalDraftThread) {
-        setDraftThreadContext(composerDraftTarget, { interactionMode: mode });
+        setDraftThreadContext(composerDraftTarget, {
+          interactionMode: mode,
+          ...(workflow !== undefined ? { workflow } : {}),
+        });
+      } else if (activeThreadId) {
+        void setThreadInteractionMode({
+          environmentId,
+          input: {
+            threadId: activeThreadId,
+            interactionMode: mode,
+            ...(workflow ? { workflow } : {}),
+          },
+        });
       }
       scheduleComposerFocus();
     },
     [
+      activeThreadId,
+      composerDraftTarget,
+      environmentId,
       interactionMode,
       isLocalDraftThread,
       scheduleComposerFocus,
-      composerDraftTarget,
       setComposerDraftInteractionMode,
       setDraftThreadContext,
+      setThreadInteractionMode,
     ],
   );
-  const toggleInteractionMode = useCallback(() => {
-    handleInteractionModeChange(interactionMode === "plan" ? "default" : "plan");
-  }, [handleInteractionModeChange, interactionMode]);
   const createBrowserSurface = useCallback(() => {
     if (!activeThreadRef) return;
     void addBrowserSurface({ threadRef: activeThreadRef, openPreview });
@@ -4706,6 +4821,60 @@ function ChatViewContent(props: ChatViewProps) {
       }
     }
   }, [activeThread, environmentId, interruptThreadTurn, setThreadError]);
+  const handleCancelQueuedTurn = useCallback(
+    async (turnId: string) => {
+      if (!activeThreadId) return;
+      setCancellingQueuedTurnIds((existing) =>
+        existing.includes(turnId) ? existing : [...existing, turnId],
+      );
+      const result = await cancelQueuedThreadTurn({
+        environmentId,
+        input: {
+          threadId: activeThreadId,
+          turnId: turnId as TurnId,
+        },
+      });
+      if (result._tag === "Failure") {
+        setCancellingQueuedTurnIds((existing) => existing.filter((id) => id !== turnId));
+        if (!isAtomCommandInterrupted(result)) {
+          const error = squashAtomCommandFailure(result);
+          setThreadError(
+            activeThreadId,
+            error instanceof Error ? error.message : "Failed to cancel queued follow-up.",
+          );
+        }
+      }
+    },
+    [activeThreadId, cancelQueuedThreadTurn, environmentId, setThreadError],
+  );
+  const queuedTurnBannerItems = useMemo<ComposerBannerStackItem[]>(() => {
+    if (!activeThreadId || queuedTurns.length === 0) return [];
+    return queuedTurns.map((queued) => {
+      const cancelling = cancellingQueuedTurnIds.includes(queued.turnId);
+      const label =
+        queued.deliveryMode === "follow-up"
+          ? `Follow-up queued (#${queued.queuePosition})`
+          : `Steer queued (#${queued.queuePosition})`;
+      return {
+        id: `queued-turn:${queued.turnId}`,
+        variant: "info" as const,
+        urgent: true,
+        icon: <span className="size-1.5 rounded-full bg-foreground" aria-hidden />,
+        title: label,
+        description: "Waiting for the current turn to finish before promotion.",
+        actions: (
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={cancelling}
+            onClick={() => void handleCancelQueuedTurn(queued.turnId)}
+          >
+            {cancelling ? "Cancelling..." : "Cancel"}
+          </Button>
+        ),
+      };
+    });
+  }, [activeThreadId, cancellingQueuedTurnIds, handleCancelQueuedTurn, queuedTurns]);
   const backgroundLivenessBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
     if (activeBackgroundLiveness === null || !activeThread) {
       return null;
@@ -4931,6 +5100,7 @@ function ChatViewContent(props: ChatViewProps) {
     if (!localCheckoutBranchMismatch || !showBranchMismatchBanner || !activeBranchMismatchKey) {
       return [
         ...urgentSystemItems,
+        ...queuedTurnBannerItems,
         ...backgroundLivenessItems,
         ...calmSystemItems,
         ...resumeCompactionItems,
@@ -4940,6 +5110,7 @@ function ChatViewContent(props: ChatViewProps) {
     }
     return [
       ...urgentSystemItems,
+      ...queuedTurnBannerItems,
       ...backgroundLivenessItems,
       ...calmSystemItems,
       ...resumeCompactionItems,
@@ -4993,6 +5164,7 @@ function ChatViewContent(props: ChatViewProps) {
     localCheckoutBranchMismatch,
     parkedThreadBannerItem,
     resumeCompactionBannerItem,
+    queuedTurnBannerItems,
     showBranchMismatchBanner,
     systemComposerBannerItems,
     wokeThreadBannerItem,
@@ -5393,6 +5565,14 @@ function ChatViewContent(props: ChatViewProps) {
       selectedPromptEffort: ctxSelectedPromptEffort,
       selectedModelSelection: ctxSelectedModelSelection,
     } = sendCtx;
+    const deliveryMode = resolveComposerTurnDeliveryMode({
+      phase,
+      provider:
+        providerStatuses.find(
+          (provider) => provider.instanceId === ctxSelectedModelSelection.instanceId,
+        ) ?? null,
+      wouldReplaceActiveSession: Boolean(serverThread && runtimeMode !== serverThread.runtimeMode),
+    });
     const composerImages =
       directAnnotation?.image &&
       !sendContextImages.some((image) => image.id === directAnnotation.image?.id)
@@ -5547,10 +5727,16 @@ function ChatViewContent(props: ChatViewProps) {
       });
       return;
     }
-    // Legacy plan mode: /plan and /default only act when the beta flag is on;
-    // otherwise they send as plain text like any other message.
+    // Parse plan commands whenever the selected provider advertises plan mode.
+    // The beta flag remains the compatibility gate for legacy providers.
+    const selectedProviderForSend = providerStatuses.find(
+      (provider) => provider.instanceId === ctxSelectedModelSelection.instanceId,
+    );
+    const planSlashCommandsEnabled =
+      settings.planModeEnabled ||
+      selectedProviderForSend?.supportedInteractionModes?.includes("plan") === true;
     const standaloneSlashCommand =
-      settings.planModeEnabled &&
+      planSlashCommandsEnabled &&
       composerImages.length === 0 &&
       sendableComposerTerminalContexts.length === 0 &&
       composerElementContexts.length === 0 &&
@@ -5830,7 +6016,8 @@ function ChatViewContent(props: ChatViewProps) {
                       modelSelection: threadCreateModelSelection,
                       runtimeMode,
                       interactionMode,
-                      branch: activeThreadBranch,
+                      ...(planWorkflow !== undefined ? { workflow: planWorkflow } : {}),
+                      branch: baseBranchForWorktree ? null : activeThread.branch,
                       worktreePath: activeThread.worktreePath,
                       createdAt: activeThread.createdAt,
                     },
@@ -5871,6 +6058,8 @@ function ChatViewContent(props: ChatViewProps) {
           titleSeed: title,
           runtimeMode,
           interactionMode,
+          ...(planWorkflow !== undefined ? { workflow: planWorkflow } : {}),
+          ...(deliveryMode !== undefined ? { deliveryMode } : {}),
           ...(bootstrap ? { bootstrap } : {}),
           createdAt: messageCreatedAt,
         },
@@ -6047,7 +6236,7 @@ function ChatViewContent(props: ChatViewProps) {
   );
 
   const onRespondToUserInput = useCallback(
-    async (requestId: ApprovalRequestId, answers: Record<string, ProviderUserInputAnswer>) => {
+    async (requestId: ApprovalRequestId, response: ProviderUserInputResponse) => {
       if (!activeThreadId) return;
 
       setRespondingUserInputRequestIds((existing) =>
@@ -6058,7 +6247,7 @@ function ChatViewContent(props: ChatViewProps) {
         input: {
           threadId: activeThreadId,
           requestId,
-          response: { kind: "submit", answers },
+          response,
         },
       });
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
@@ -6074,6 +6263,54 @@ function ChatViewContent(props: ChatViewProps) {
     [activeThreadId, environmentId, respondToThreadUserInput, setThreadError],
   );
 
+  const onRespondToPlanReview = useCallback(
+    async (decision: ProviderPlanReviewDecision) => {
+      if (!activeThreadId || !pendingPlanReview) return;
+      const requestId = pendingPlanReview.requestId;
+      const responseScope: PlanReviewResponseScope = {
+        environmentId,
+        threadId: activeThreadId,
+        requestId,
+      };
+      if (!planReviewResponseCoordinator.begin(responseScope)) return;
+      setRespondingPlanReviewScopes((current) =>
+        current.some((scope) => samePlanReviewResponseScope(scope, responseScope))
+          ? current
+          : [...current, responseScope],
+      );
+      const result = await respondToThreadPlanReview({
+        environmentId,
+        input: {
+          threadId: activeThreadId,
+          requestId,
+          decision,
+        },
+      });
+      if (result._tag === "Failure") {
+        if (!isAtomCommandInterrupted(result)) {
+          const error = squashAtomCommandFailure(result);
+          setThreadError(
+            activeThreadId,
+            error instanceof Error ? error.message : "Failed to submit plan review.",
+          );
+        }
+        planReviewResponseCoordinator.fail(responseScope);
+        setRespondingPlanReviewScopes((current) =>
+          current.filter((scope) => !samePlanReviewResponseScope(scope, responseScope)),
+        );
+      }
+      return result;
+    },
+    [
+      activeThreadId,
+      environmentId,
+      pendingPlanReview,
+      planReviewResponseCoordinator,
+      respondToThreadPlanReview,
+      setThreadError,
+    ],
+  );
+
   const setActivePendingUserInputQuestionIndex = useCallback(
     (nextQuestionIndex: number) => {
       if (!activePendingUserInput) {
@@ -6081,10 +6318,10 @@ function ChatViewContent(props: ChatViewProps) {
       }
       setPendingUserInputQuestionIndexByRequestId((existing) => ({
         ...existing,
-        [activePendingUserInput.requestId]: nextQuestionIndex,
+        [userInputDraftKey(activePendingUserInput.requestId)]: nextQuestionIndex,
       }));
     },
-    [activePendingUserInput],
+    [activePendingUserInput, userInputDraftKey],
   );
 
   const onSelectActivePendingUserInputOption = useCallback(
@@ -6104,11 +6341,11 @@ function ChatViewContent(props: ChatViewProps) {
 
         return {
           ...existing,
-          [activePendingUserInput.requestId]: {
-            ...existing[activePendingUserInput.requestId],
+          [userInputDraftKey(activePendingUserInput.requestId)]: {
+            ...existing[userInputDraftKey(activePendingUserInput.requestId)],
             [questionId]: togglePendingUserInputOptionSelection(
               question,
-              existing[activePendingUserInput.requestId]?.[questionId],
+              existing[userInputDraftKey(activePendingUserInput.requestId)]?.[questionId],
               optionLabel,
             ),
           },
@@ -6117,7 +6354,7 @@ function ChatViewContent(props: ChatViewProps) {
       promptRef.current = "";
       composerRef.current?.resetCursorState({ cursor: 0 });
     },
-    [activePendingProgress?.activeQuestion, activePendingUserInput, composerRef],
+    [activePendingProgress?.activeQuestion, activePendingUserInput, composerRef, userInputDraftKey],
   );
 
   const onChangeActivePendingUserInputCustomAnswer = useCallback(
@@ -6134,10 +6371,10 @@ function ChatViewContent(props: ChatViewProps) {
       promptRef.current = value;
       setPendingUserInputAnswersByRequestId((existing) => ({
         ...existing,
-        [activePendingUserInput.requestId]: {
-          ...existing[activePendingUserInput.requestId],
+        [userInputDraftKey(activePendingUserInput.requestId)]: {
+          ...existing[userInputDraftKey(activePendingUserInput.requestId)],
           [questionId]: setPendingUserInputCustomAnswer(
-            existing[activePendingUserInput.requestId]?.[questionId],
+            existing[userInputDraftKey(activePendingUserInput.requestId)]?.[questionId],
             value,
           ),
         },
@@ -6151,7 +6388,32 @@ function ChatViewContent(props: ChatViewProps) {
         composerRef.current?.focusAt(nextCursor);
       }
     },
-    [activePendingUserInput, composerRef],
+    [activePendingUserInput, composerRef, userInputDraftKey],
+  );
+
+  const onChangeActivePendingUserInputNote = useCallback(
+    (questionId: string, note: string) => {
+      if (!activePendingUserInput) return;
+      setPendingUserInputAnswersByRequestId((existing) => ({
+        ...existing,
+        [userInputDraftKey(activePendingUserInput.requestId)]: {
+          ...existing[userInputDraftKey(activePendingUserInput.requestId)],
+          [questionId]: setPendingUserInputNote(
+            existing[userInputDraftKey(activePendingUserInput.requestId)]?.[questionId],
+            note,
+          ),
+        },
+      }));
+    },
+    [activePendingUserInput, userInputDraftKey],
+  );
+
+  const onRespondToActivePendingUserInputAction = useCallback(
+    (action: "chat" | "cancel") => {
+      if (!activePendingUserInput) return;
+      void onRespondToUserInput(activePendingUserInput.requestId, { kind: action });
+    },
+    [activePendingUserInput, onRespondToUserInput],
   );
 
   const onAdvanceActivePendingUserInput = useCallback(() => {
@@ -6159,8 +6421,14 @@ function ChatViewContent(props: ChatViewProps) {
       return;
     }
     if (activePendingProgress.isLastQuestion) {
-      if (activePendingResolvedAnswers) {
-        void onRespondToUserInput(activePendingUserInput.requestId, activePendingResolvedAnswers);
+      if (
+        activePendingResolvedAnswers &&
+        pendingUserInputAllowsSubmit(activePendingUserInput.allowedActions)
+      ) {
+        void onRespondToUserInput(activePendingUserInput.requestId, {
+          kind: "submit",
+          answers: activePendingResolvedAnswers,
+        });
       }
       return;
     }
@@ -6914,6 +7182,20 @@ function ChatViewContent(props: ChatViewProps) {
               <MessagesTimeline
                 agentPanelModel={agentPanelModel}
                 onOpenAgents={addAgentsSurface}
+                pendingPlanReview={pendingPlanReview}
+                isPlanReviewResponding={respondingPlanReviewScopes.some((scope) =>
+                  samePlanReviewResponseScope(
+                    scope,
+                    activeThreadId && pendingPlanReview
+                      ? {
+                          environmentId,
+                          threadId: activeThreadId,
+                          requestId: pendingPlanReview.requestId,
+                        }
+                      : null,
+                  ),
+                )}
+                onRespondToPlanReview={(decision) => void onRespondToPlanReview(decision)}
                 key={activeThread.id}
                 isWorking={isWorking}
                 workingStepLabel={workingStepLabel}
@@ -7067,6 +7349,7 @@ function ChatViewContent(props: ChatViewProps) {
                             activeTaskSteps={activeComposerTaskSteps}
                             runtimeMode={runtimeMode}
                             interactionMode={interactionMode}
+                            planWorkflow={planWorkflow ?? null}
                             lockedProvider={lockedProvider}
                             providerStatuses={providerStatuses as ServerProvider[]}
                             activeProjectDefaultModelSelection={
@@ -7099,9 +7382,12 @@ function ChatViewContent(props: ChatViewProps) {
                             onChangeActivePendingUserInputCustomAnswer={
                               onChangeActivePendingUserInputCustomAnswer
                             }
+                            onChangeActivePendingUserInputNote={onChangeActivePendingUserInputNote}
+                            onRespondToActivePendingUserInputAction={
+                              onRespondToActivePendingUserInputAction
+                            }
                             onProviderModelSelect={onProviderModelSelect}
                             getModelDisabledReason={getModelDisabledReason}
-                            toggleInteractionMode={toggleInteractionMode}
                             handleRuntimeModeChange={handleRuntimeModeChange}
                             handleInteractionModeChange={handleInteractionModeChange}
                             focusComposer={focusComposer}

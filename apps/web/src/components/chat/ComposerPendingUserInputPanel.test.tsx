@@ -22,15 +22,17 @@ const prompt: PendingUserInput = {
   ],
 };
 
-function renderPanel() {
+function renderPanel(pendingPrompt: PendingUserInput = prompt) {
   return renderToStaticMarkup(
     <ComposerPendingUserInputPanel
-      pendingUserInputs={[prompt]}
+      pendingUserInputs={[pendingPrompt]}
       respondingRequestIds={[]}
       answers={{}}
       questionIndex={0}
       onToggleOption={() => {}}
       onAdvance={() => {}}
+      onChangeNote={() => {}}
+      onRespondAction={() => {}}
     />,
   );
 }
@@ -57,5 +59,34 @@ describe("ComposerPendingUserInputPanel", () => {
     expect(markup).toContain("Which approach should the migration take?");
     expect(markup).toContain("Incremental");
     expect(markup).toContain("Big bang");
+  });
+
+  it("renders OMP recommendations, previews, notes, actions, and timeout", () => {
+    const markup = renderPanel({
+      ...prompt,
+      timeout: 30_000,
+      supportsNote: true,
+      allowedActions: ["submit", "chat", "cancel"],
+      questions: [
+        {
+          ...prompt.questions[0]!,
+          recommended: 0,
+          options: [
+            {
+              label: "Incremental",
+              description: "Move one module at a time",
+              preview: "packages/contracts → apps/server",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(markup).toContain("30s timeout");
+    expect(markup).toContain("Recommended");
+    expect(markup).toContain("packages/contracts → apps/server");
+    expect(markup).toContain('placeholder="Optional note"');
+    expect(markup).toContain(">Cancel<");
+    expect(markup).toContain("Answer in chat");
   });
 });
