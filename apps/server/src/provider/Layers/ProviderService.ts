@@ -12,18 +12,21 @@
 import {
   ModelSelection,
   NonNegativeInt,
-  ThreadId,
   ProviderInterruptTurnInput,
+  ProviderRespondToPlanReviewInput,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
   ProviderSendTurnInput,
   ProviderSessionStartInput,
+  ProviderSetInteractionModeInput,
   ProviderStopSessionInput,
   ProviderUploadFeedbackInput,
-  type ProviderInstanceId,
+  ThreadId,
   type ProviderDriverKind,
+  type ProviderInstanceId,
   type ProviderRuntimeEvent,
   type ProviderSession,
+  type TurnId,
 } from "@t3tools/contracts";
 import { causeErrorTag } from "@t3tools/shared/observability";
 import * as DateTime from "effect/DateTime";
@@ -175,6 +178,20 @@ function readPersistedCwd(
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function queuedOmpTurnKey(threadId: ThreadId, turnId: string): string {
+  return `${String(threadId)}\u0000${turnId}`;
+}
+
+interface PendingOmpModelSelection {
+  readonly token: number;
+  readonly selection: ModelSelection;
+}
+
+interface QueuedOmpModelSelectionState {
+  readonly byTurn: Map<string, ModelSelection>;
+  readonly pendingByThread: Map<string, ReadonlyArray<PendingOmpModelSelection>>;
+}
+
 const dieOnMissingBindingInstanceId = (
   operation: string,
   payload: {
@@ -259,6 +276,58 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     ),
   );
 
+  // A queued OMP follow-up is not authoritative until its native promotion
+  // starts the turn. Register the override before adapter admission so a
+  // promotion racing the follow-up response can consume it by thread FIFO;
+  // once the adapter returns, move an unconsumed entry to its concrete turn.
+  const queuedOmpModelSelections = yield* Ref.make<QueuedOmpModelSelectionState>({
+    byTurn: new Map(),
+    pendingByThread: new Map(),
+  });
+  let nextQueuedOmpModelSelectionToken = 0;
+  const enqueuePendingOmpModelSelection = (threadId: ThreadId, selection: ModelSelection) =>
+    Effect.gen(function* () {
+      const token = ++nextQueuedOmpModelSelectionToken;
+      yield* Ref.update(queuedOmpModelSelections, (state) => {
+        const threadKey = String(threadId);
+        const pendingByThread = new Map(state.pendingByThread);
+        pendingByThread.set(threadKey, [
+          ...(pendingByThread.get(threadKey) ?? []),
+          { token, selection },
+        ]);
+        return { ...state, pendingByThread };
+      });
+      return token;
+    });
+  const removePendingOmpModelSelection = (threadId: ThreadId, token: number) =>
+    Ref.update(queuedOmpModelSelections, (state) => {
+      const threadKey = String(threadId);
+      const pending = state.pendingByThread.get(threadKey);
+      if (!pending?.some((entry) => entry.token === token)) return state;
+      const remaining = pending.filter((entry) => entry.token !== token);
+      const pendingByThread = new Map(state.pendingByThread);
+      if (remaining.length === 0) pendingByThread.delete(threadKey);
+      else pendingByThread.set(threadKey, remaining);
+      return { ...state, pendingByThread };
+    });
+  const bindPendingOmpModelSelection = (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+    readonly token: number;
+  }) =>
+    Ref.update(queuedOmpModelSelections, (state) => {
+      const threadKey = String(input.threadId);
+      const pending = state.pendingByThread.get(threadKey);
+      const entry = pending?.find((candidate) => candidate.token === input.token);
+      if (!entry) return state;
+      const remaining = pending!.filter((candidate) => candidate.token !== input.token);
+      const pendingByThread = new Map(state.pendingByThread);
+      if (remaining.length === 0) pendingByThread.delete(threadKey);
+      else pendingByThread.set(threadKey, remaining);
+      const byTurn = new Map(state.byTurn);
+      byTurn.set(queuedOmpTurnKey(input.threadId, input.turnId), entry.selection);
+      return { byTurn, pendingByThread };
+    });
   const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
     Effect.gen(function* () {
       if (!(yield* agentBrowserAccessEnabled)) {
@@ -346,10 +415,130 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   ): Effect.Effect<void> =>
     Effect.sync(() => correlateRuntimeEventWithInstance(source, event)).pipe(
       Effect.flatMap((canonicalEvent) =>
-        increment(providerRuntimeEventsTotal, {
-          provider: canonicalEvent.provider,
-          eventType: canonicalEvent.type,
-        }).pipe(Effect.andThen(publishRuntimeEvent(canonicalEvent))),
+        Effect.gen(function* () {
+          const eventTurnId = canonicalEvent.turnId;
+          const isOmpEvent = canonicalEvent.provider === "omp";
+          const promotedModelSelection =
+            isOmpEvent && canonicalEvent.type === "turn.started" && eventTurnId !== undefined
+              ? yield* Ref.modify(queuedOmpModelSelections, (state) => {
+                  const key = queuedOmpTurnKey(canonicalEvent.threadId, eventTurnId);
+                  const exactSelection = state.byTurn.get(key);
+                  if (exactSelection !== undefined) {
+                    const byTurn = new Map(state.byTurn);
+                    byTurn.delete(key);
+                    return [exactSelection, { ...state, byTurn }] as const;
+                  }
+                  const threadKey = String(canonicalEvent.threadId);
+                  const pending = state.pendingByThread.get(threadKey);
+                  const first = pending?.[0];
+                  if (!first) return [undefined, state] as const;
+                  const pendingByThread = new Map(state.pendingByThread);
+                  if (pending.length === 1) pendingByThread.delete(threadKey);
+                  else pendingByThread.set(threadKey, pending.slice(1));
+                  return [first.selection, { ...state, pendingByThread }] as const;
+                })
+              : undefined;
+          if (
+            isOmpEvent &&
+            promotedModelSelection === undefined &&
+            (canonicalEvent.type === "turn.aborted" ||
+              canonicalEvent.type === "turn.completed" ||
+              canonicalEvent.type === "session.exited")
+          ) {
+            yield* Ref.update(queuedOmpModelSelections, (state) => {
+              if (canonicalEvent.type === "session.exited") {
+                const prefix = `${String(canonicalEvent.threadId)}\u0000`;
+                const byTurn = new Map(state.byTurn);
+                let changed = false;
+                for (const key of byTurn.keys()) {
+                  if (key.startsWith(prefix)) {
+                    byTurn.delete(key);
+                    changed = true;
+                  }
+                }
+                const threadKey = String(canonicalEvent.threadId);
+                const pendingByThread = new Map(state.pendingByThread);
+                changed = pendingByThread.delete(threadKey) || changed;
+                return changed ? { byTurn, pendingByThread } : state;
+              }
+              if (eventTurnId === undefined) return state;
+              const key = queuedOmpTurnKey(canonicalEvent.threadId, eventTurnId);
+              if (!state.byTurn.has(key)) return state;
+              const byTurn = new Map(state.byTurn);
+              byTurn.delete(key);
+              return { ...state, byTurn };
+            });
+          }
+          yield* Effect.gen(function* () {
+            if (
+              canonicalEvent.type === "session.configured" &&
+              (canonicalEvent.payload.resumeCursor !== undefined ||
+                canonicalEvent.payload.modelSelection !== undefined)
+            ) {
+              const binding = Option.getOrUndefined(
+                yield* directory.getBinding(canonicalEvent.threadId),
+              );
+              if (binding) {
+                const nextModelSelection = canonicalEvent.payload.modelSelection;
+                yield* directory.upsert({
+                  ...binding,
+                  providerInstanceId: source.instanceId,
+                  ...(canonicalEvent.payload.resumeCursor !== undefined
+                    ? { resumeCursor: canonicalEvent.payload.resumeCursor }
+                    : {}),
+                  ...(nextModelSelection !== undefined
+                    ? {
+                        runtimePayload: {
+                          ...(binding.runtimePayload &&
+                          typeof binding.runtimePayload === "object" &&
+                          !Array.isArray(binding.runtimePayload)
+                            ? binding.runtimePayload
+                            : {}),
+                          modelSelection: nextModelSelection,
+                          model: nextModelSelection.model,
+                          lastRuntimeEvent: "session.configured",
+                          lastRuntimeEventAt: canonicalEvent.createdAt,
+                        },
+                      }
+                    : {}),
+                });
+              }
+            }
+            if (promotedModelSelection !== undefined) {
+              const binding = Option.getOrUndefined(
+                yield* directory.getBinding(canonicalEvent.threadId),
+              );
+              if (binding) {
+                yield* directory.upsert({
+                  ...binding,
+                  providerInstanceId: source.instanceId,
+                  status: "running",
+                  runtimePayload: {
+                    modelSelection: promotedModelSelection,
+                    model: promotedModelSelection.model,
+                    activeTurnId: canonicalEvent.turnId,
+                    lastRuntimeEvent: "turn.started",
+                    lastRuntimeEventAt: canonicalEvent.createdAt,
+                  },
+                });
+              }
+            }
+          }).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("provider.runtime-event.binding-update-failed", {
+                threadId: canonicalEvent.threadId,
+                provider: canonicalEvent.provider,
+                eventType: canonicalEvent.type,
+                error,
+              }),
+            ),
+          );
+          yield* increment(providerRuntimeEventsTotal, {
+            provider: canonicalEvent.provider,
+            eventType: canonicalEvent.type,
+          });
+          yield* publishRuntimeEvent(canonicalEvent);
+        }),
       ),
     );
 
@@ -785,20 +974,50 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       // rather than issuing a new one: sessions that go a long time between
       // browser tool calls used to lose the toolkit outright.
       yield* McpSessionRegistry.touchActiveMcpThread(input.threadId);
-      const turn = yield* routed.adapter.sendTurn(input);
-      yield* directory.upsert({
-        threadId: input.threadId,
-        provider: routed.adapter.provider,
-        providerInstanceId: routed.instanceId,
-        status: "running",
-        ...(turn.resumeCursor !== undefined ? { resumeCursor: turn.resumeCursor } : {}),
-        runtimePayload: {
-          ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
-          activeTurnId: turn.turnId,
-          lastRuntimeEvent: "provider.sendTurn",
-          lastRuntimeEventAt: yield* nowIso,
-        },
-      });
+      const queuedOverrideToken =
+        routed.adapter.provider === "omp" &&
+        input.deliveryMode === "follow-up" &&
+        input.modelSelection !== undefined
+          ? yield* enqueuePendingOmpModelSelection(input.threadId, input.modelSelection)
+          : undefined;
+      const turn = yield* routed.adapter
+        .sendTurn(input)
+        .pipe(
+          Effect.onError(() =>
+            queuedOverrideToken === undefined
+              ? Effect.void
+              : removePendingOmpModelSelection(input.threadId, queuedOverrideToken),
+          ),
+        );
+      // Only the adapter knows whether native state still had a running turn
+      // after the race window; never infer queueing from the pre-send binding.
+      const queueingFollowUp = turn.queued === true;
+      if (queuedOverrideToken !== undefined) {
+        if (queueingFollowUp) {
+          yield* bindPendingOmpModelSelection({
+            threadId: input.threadId,
+            turnId: turn.turnId,
+            token: queuedOverrideToken,
+          });
+        } else {
+          yield* removePendingOmpModelSelection(input.threadId, queuedOverrideToken);
+        }
+      }
+      if (!queueingFollowUp) {
+        yield* directory.upsert({
+          threadId: input.threadId,
+          provider: routed.adapter.provider,
+          providerInstanceId: routed.instanceId,
+          status: "running",
+          ...(turn.resumeCursor !== undefined ? { resumeCursor: turn.resumeCursor } : {}),
+          runtimePayload: {
+            ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
+            activeTurnId: turn.turnId,
+            lastRuntimeEvent: "provider.sendTurn",
+            lastRuntimeEventAt: yield* nowIso,
+          },
+        });
+      }
       yield* analytics.record("provider.turn.sent", {
         provider: routed.adapter.provider,
         model: input.modelSelection?.model,
@@ -924,24 +1143,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         "provider.thread_id": input.threadId,
         "provider.request_id": input.requestId,
       });
-      if (input.response.kind !== "submit") {
-        return yield* Effect.fail(
-          toValidationError(
-            "ProviderService.respondToUserInput",
-            `Provider adapter does not support '${input.response.kind}' user-input responses.`,
-          ),
-        );
-      }
-      const answers = Object.fromEntries(
-        Object.entries(input.response.answers).map(([questionId, answer]) => [
-          questionId,
-          answer.customInput ??
-            (answer.selectedOptions.length === 1
-              ? answer.selectedOptions[0]!
-              : [...answer.selectedOptions]),
-        ]),
-      );
-      yield* routed.adapter.respondToUserInput(routed.threadId, input.requestId, answers);
+      yield* routed.adapter.respondToUserInput(routed.threadId, input.requestId, input.response);
     }).pipe(
       withMetrics({
         counter: providerTurnsTotal,
@@ -951,6 +1153,75 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           }),
       }),
     );
+  });
+
+  const respondToPlanReview: ProviderServiceMethod<"respondToPlanReview"> = Effect.fn(
+    "respondToPlanReview",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.respondToPlanReview",
+      schema: ProviderRespondToPlanReviewInput,
+      payload: rawInput,
+    });
+    let metricProvider = "unknown";
+    return yield* Effect.gen(function* () {
+      const routed = yield* resolveRoutableSession({
+        threadId: input.threadId,
+        operation: "ProviderService.respondToPlanReview",
+        allowRecovery: true,
+      });
+      metricProvider = routed.adapter.provider;
+      if (!routed.adapter.respondToPlanReview) {
+        return yield* toValidationError(
+          "ProviderService.respondToPlanReview",
+          `Provider '${routed.adapter.provider}' does not support native plan review.`,
+        );
+      }
+      const result = yield* routed.adapter.respondToPlanReview(input);
+      if (result) {
+        yield* directory.upsert({
+          threadId: input.threadId,
+          provider: routed.adapter.provider,
+          providerInstanceId: routed.instanceId,
+          status: "running",
+          ...(result.resumeCursor !== undefined ? { resumeCursor: result.resumeCursor } : {}),
+          runtimePayload: {
+            activeTurnId: result.turnId,
+            lastRuntimeEvent: "provider.respondToPlanReview",
+            lastRuntimeEventAt: yield* nowIso,
+          },
+        });
+      }
+      return result;
+    }).pipe(
+      withMetrics({
+        counter: providerTurnsTotal,
+        outcomeAttributes: () =>
+          providerMetricAttributes(metricProvider, { operation: "plan-review-response" }),
+      }),
+    );
+  });
+
+  const setInteractionMode: ProviderServiceMethod<"setInteractionMode"> = Effect.fn(
+    "setInteractionMode",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.setInteractionMode",
+      schema: ProviderSetInteractionModeInput,
+      payload: rawInput,
+    });
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.setInteractionMode",
+      allowRecovery: true,
+    });
+    // Adapters without a live switch still accept the projection change so the
+    // next turn can apply the mode. Only OMP (and future live-switch adapters)
+    // call into the provider process here.
+    if (!routed.adapter.setInteractionMode) {
+      return;
+    }
+    yield* routed.adapter.setInteractionMode(input);
   });
 
   const stopSession: ProviderServiceMethod<"stopSession"> = Effect.fn("stopSession")(
@@ -1242,6 +1513,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     interruptTurn,
     respondToRequest,
     respondToUserInput,
+    respondToPlanReview,
+    setInteractionMode,
     stopSession,
     listSessions,
     getCapabilities,

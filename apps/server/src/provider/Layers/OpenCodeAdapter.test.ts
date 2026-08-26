@@ -16,6 +16,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { beforeEach } from "vite-plus/test";
 
 import {
+  ApprovalRequestId,
   OpenCodeSettings,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -64,6 +65,7 @@ const runtimeMock = {
     closeCalls: [] as string[],
     revertCalls: [] as Array<{ sessionID: string; messageID?: string }>,
     promptCalls: [] as Array<unknown>,
+    questionRejectCalls: [] as string[],
     promptAsyncError: null as Error | null,
     closeError: null as Error | null,
     messages: [] as MessageEntry[],
@@ -83,6 +85,7 @@ const runtimeMock = {
     this.state.abortCalls.length = 0;
     this.state.closeCalls.length = 0;
     this.state.revertCalls.length = 0;
+    this.state.questionRejectCalls.length = 0;
     this.state.promptCalls.length = 0;
     this.state.promptAsyncError = null;
     this.state.closeError = null;
@@ -202,6 +205,12 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
               ? runtimeMock.state.messages.slice(0, targetIndex + 1)
               : runtimeMock.state.messages;
         },
+      },
+      question: {
+        reject: async ({ requestID }: { requestID: string }) => {
+          runtimeMock.state.questionRejectCalls.push(requestID);
+        },
+        reply: async () => {},
       },
       event: {
         subscribe: async () => ({
@@ -1053,6 +1062,49 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       NodeAssert.equal(yield* sameDirectory(link, real), true);
       NodeAssert.equal(yield* sameDirectory(link, path.join(base, "other")), false);
     }).pipe(Effect.scoped),
+  );
+
+  it.effect("rejects native OpenCode questions when user input is cancelled", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-question-cancel");
+      const requestId = "question-cancel";
+      const approvalRequestId = ApprovalRequestId.make(requestId);
+      runtimeMock.state.subscribedEvents = [
+        {
+          type: "question.asked",
+          properties: {
+            id: requestId,
+            sessionID: "http://127.0.0.1:9999/session",
+            questions: [
+              {
+                header: "Continue",
+                question: "Continue with this approach?",
+                options: [{ label: "Yes", description: "Continue" }],
+                multiple: false,
+              },
+            ],
+          },
+        },
+      ];
+      const requestedFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) => event.type === "user-input.requested" && event.requestId === requestId,
+        ),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const requested = yield* Fiber.join(requestedFiber).pipe(Effect.timeout("1 second"));
+      NodeAssert.equal(Option.isSome(requested), true);
+
+      yield* adapter.respondToUserInput?.(threadId, approvalRequestId, { kind: "cancel" });
+      NodeAssert.deepEqual(runtimeMock.state.questionRejectCalls, [requestId]);
+    }),
   );
 
   it.effect("appends raw assistant text deltas and reconciles part update snapshots", () =>

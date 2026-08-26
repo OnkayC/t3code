@@ -37,7 +37,7 @@ import {
   type ProviderSendTurnInput,
   type ProviderSession,
   type ThreadTokenUsageSnapshot,
-  type ProviderUserInputAnswers,
+  type ProviderUserInputResponse,
   type RuntimeContentStreamKind,
   RuntimeItemId,
   RuntimeRequestId,
@@ -50,6 +50,7 @@ import {
   TurnId,
   type UserInputQuestion,
 } from "@t3tools/contracts";
+
 import {
   applyClaudePromptEffortPrefix,
   getModelSelectionBooleanOptionValue,
@@ -99,6 +100,7 @@ import {
 } from "../Errors.ts";
 import { type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+type ClaudeUserInputAnswers = Readonly<Record<string, string | ReadonlyArray<string>>>;
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
 const decodeUnknownJsonStringExit = Schema.decodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
 
@@ -197,9 +199,27 @@ function toSessionPermissionUpdates(
 
 interface PendingUserInput {
   readonly questions: ReadonlyArray<UserInputQuestion>;
-  readonly answers: Deferred.Deferred<ProviderUserInputAnswers>;
+  readonly answers: Deferred.Deferred<ClaudeUserInputAnswers>;
   /** Unparks the waiting handler as cancelled. Session teardown must run it. */
   readonly cancel: Effect.Effect<void>;
+}
+
+function toClaudeUserInputAnswers(
+  answers: Extract<ProviderUserInputResponse, { readonly kind: "submit" }>["answers"],
+): ClaudeUserInputAnswers {
+  return Object.fromEntries(
+    Object.entries(answers).map(([questionId, answer]) => {
+      if (answer.customInput !== undefined) {
+        return [questionId, answer.customInput] as const;
+      }
+      return [
+        questionId,
+        answer.selectedOptions.length === 1
+          ? answer.selectedOptions[0]!
+          : [...answer.selectedOptions],
+      ] as const;
+    }),
+  );
 }
 
 interface ToolInFlight {
@@ -3908,7 +3928,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           }),
         );
 
-        const answersDeferred = yield* Deferred.make<ProviderUserInputAnswers>();
+        const answersDeferred = yield* Deferred.make<ClaudeUserInputAnswers>();
         let aborted = false;
         const settleAsAborted = Effect.suspend(() => {
           if (!pendingUserInputs.has(requestId)) {
@@ -3940,7 +3960,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               }
             : {}),
           requestId: asRuntimeRequestId(requestId),
-          payload: { questions },
+          payload: { questions, allowedActions: ["submit"] },
           providerRefs: nativeProviderRefs(context, {
             providerItemId: callbackOptions.toolUseID,
           }),
@@ -3988,7 +4008,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               }
             : {}),
           requestId: asRuntimeRequestId(requestId),
-          payload: { answers },
+          payload: aborted ? { outcome: "cancelled" } : { outcome: "submitted", answers },
           providerRefs: nativeProviderRefs(context, {
             providerItemId: callbackOptions.toolUseID,
           }),
@@ -4665,7 +4685,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
   const respondToUserInput: ClaudeAdapterShape["respondToUserInput"] = Effect.fn(
     "respondToUserInput",
-  )(function* (threadId, requestId, answers) {
+  )(function* (threadId, requestId, response: ProviderUserInputResponse) {
     const context = yield* requireSession(threadId);
     const pending = context.pendingUserInputs.get(requestId);
     if (!pending) {
@@ -4675,9 +4695,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         detail: `Unknown pending user-input request: ${requestId}`,
       });
     }
+    if (response.kind !== "submit") {
+      return yield* new ProviderAdapterRequestError({
+        provider: PROVIDER,
+        method: "item/tool/respondToUserInput",
+        detail: `User-input action '${response.kind}' is not supported by Claude.`,
+      });
+    }
 
     context.pendingUserInputs.delete(requestId);
-    yield* Deferred.succeed(pending.answers, answers);
+    yield* Deferred.succeed(pending.answers, toClaudeUserInputAnswers(response.answers));
   });
 
   const stopSession: ClaudeAdapterShape["stopSession"] = Effect.fn("stopSession")(

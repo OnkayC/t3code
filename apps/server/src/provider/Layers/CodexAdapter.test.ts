@@ -14,7 +14,7 @@ import {
   type ProviderEvent,
   type ProviderSession,
   type ProviderTurnStartResult,
-  type ProviderUserInputAnswers,
+  type ProviderUserInputAnswer,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -114,8 +114,10 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
   );
 
   public readonly respondToUserInputImpl = vi.fn(
-    (_requestId: ApprovalRequestId, _answers: ProviderUserInputAnswers): Promise<void> =>
-      Promise.resolve(undefined),
+    (
+      _requestId: ApprovalRequestId,
+      _answers: Readonly<Record<string, ProviderUserInputAnswer>>,
+    ): Promise<void> => Promise.resolve(undefined),
   );
 
   public readonly closeImpl = vi.fn(() => Promise.resolve(undefined));
@@ -154,7 +156,10 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
     return Effect.promise(() => this.respondToRequestImpl(requestId, decision));
   }
 
-  respondToUserInput(requestId: ApprovalRequestId, answers: ProviderUserInputAnswers) {
+  respondToUserInput(
+    requestId: ApprovalRequestId,
+    answers: Readonly<Record<string, ProviderUserInputAnswer>>,
+  ) {
     return Effect.promise(() => this.respondToUserInputImpl(requestId, answers));
   }
 
@@ -615,6 +620,35 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
           { taskId: "child-2", status: "running" },
         ],
       );
+    }),
+  );
+
+  it.effect("forwards normalized submit responses without reinterpreting actions", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const requestId = ApprovalRequestId.make("req-normalized-user-input");
+
+      yield* adapter.respondToUserInput(asThreadId("thread-1"), requestId, {
+        kind: "submit",
+        answers: {
+          scope: {
+            selectedOptions: ["workspace", "tests"],
+            customInput: "docs",
+            note: "Keep the rollout staged",
+          },
+        },
+      });
+
+      NodeAssert.deepStrictEqual(runtime.respondToUserInputImpl.mock.calls[0], [
+        requestId,
+        {
+          scope: {
+            selectedOptions: ["workspace", "tests"],
+            customInput: "docs",
+            note: "Keep the rollout staged",
+          },
+        },
+      ]);
     }),
   );
 
@@ -1286,6 +1320,9 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
                     label: "workspace-write",
                     description: "Allow workspace writes only",
                   },
+                  {
+                    label: "read-only",
+                  },
                 ],
               },
             ],
@@ -1314,11 +1351,14 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
           NodeAssert.equal(events[0].requestId, "req-user-input-1");
           NodeAssert.equal(events[0].payload.questions[0]?.id, "sandbox_mode");
           NodeAssert.equal(events[0].payload.questions[0]?.multiSelect, false);
+          NodeAssert.equal(events[0].payload.questions[0]?.options[1]?.label, "read-only");
+          NodeAssert.deepEqual(events[0].payload.allowedActions, ["submit"]);
         }
 
         NodeAssert.equal(events[1]?.type, "user-input.resolved");
         if (events[1]?.type === "user-input.resolved") {
           NodeAssert.equal(events[1].requestId, "req-user-input-1");
+          NodeAssert.equal(events[1].payload.outcome, "submitted");
           NodeAssert.deepEqual(events[1].payload.answers, {
             sandbox_mode: "workspace-write",
           });

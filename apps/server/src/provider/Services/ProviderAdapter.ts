@@ -11,15 +11,20 @@ import type {
   ApprovalRequestId,
   ProviderApprovalDecision,
   ProviderDriverKind,
-  ProviderUserInputAnswers,
+  ProviderInteractionMode,
+  ProviderPlanReviewContextStrategy,
+  ProviderRespondToPlanReviewInput,
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
+  ProviderSetInteractionModeInput,
+  ProviderTurnDeliveryMode,
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
-  ThreadId,
   ProviderTurnStartResult,
+  ProviderUserInputResponse,
+  ThreadId,
   TurnId,
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
@@ -28,10 +33,12 @@ import type * as Stream from "effect/Stream";
 export type ProviderSessionModelSwitchMode = "in-session" | "unsupported";
 
 export interface ProviderAdapterCapabilities {
-  /**
-   * Declares whether changing the model on an existing session is supported.
-   */
+  /** Declares whether changing the model on an existing session is supported. */
   readonly sessionModelSwitch: ProviderSessionModelSwitchMode;
+  readonly supportedInteractionModes?: ReadonlyArray<ProviderInteractionMode>;
+  readonly supportedTurnDeliveryModes?: ReadonlyArray<ProviderTurnDeliveryMode>;
+  readonly planReviewContextStrategies?: ReadonlyArray<ProviderPlanReviewContextStrategy>;
+  readonly supportsPlanExecutionModelSelection?: boolean;
 }
 
 export interface ProviderThreadTurnSnapshot {
@@ -85,7 +92,17 @@ export interface ProviderAdapterShape<TError> {
   readonly respondToUserInput: (
     threadId: ThreadId,
     requestId: ApprovalRequestId,
-    answers: ProviderUserInputAnswers,
+    response: ProviderUserInputResponse,
+  ) => Effect.Effect<void, TError>;
+
+  /** Respond to a native same-thread plan review. */
+  readonly respondToPlanReview?: (
+    input: ProviderRespondToPlanReviewInput,
+  ) => Effect.Effect<ProviderTurnStartResult | void, TError>;
+
+  /** Change the provider-native interaction/plan mode for an active session. */
+  readonly setInteractionMode?: (
+    input: ProviderSetInteractionModeInput,
   ) => Effect.Effect<void, TError>;
 
   /**

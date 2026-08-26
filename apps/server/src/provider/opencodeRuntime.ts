@@ -1,6 +1,11 @@
 import * as NodeURL from "node:url";
 
-import type { ChatAttachment, ProviderApprovalDecision, RuntimeMode } from "@t3tools/contracts";
+import type {
+  ChatAttachment,
+  ProviderApprovalDecision,
+  ProviderUserInputAnswer,
+  RuntimeMode,
+} from "@t3tools/contracts";
 import {
   createOpencodeClient,
   type Agent,
@@ -409,20 +414,20 @@ export function toOpenCodePermissionReply(
 
 export function toOpenCodeQuestionAnswers(
   request: QuestionRequest,
-  answers: Record<string, unknown>,
+  answers: Readonly<Record<string, ProviderUserInputAnswer>>,
 ): Array<QuestionAnswer> {
   return request.questions.map((question, index) => {
-    const raw =
+    const answer =
       answers[openCodeQuestionId(index, question)] ??
       answers[question.header] ??
       answers[question.question];
-    if (Array.isArray(raw)) {
-      return raw.filter((value): value is string => typeof value === "string");
+    if (!answer) {
+      return [];
     }
-    if (typeof raw === "string") {
-      return raw.trim().length > 0 ? [raw] : [];
-    }
-    return [];
+    return [
+      ...answer.selectedOptions,
+      ...(answer.customInput !== undefined ? [answer.customInput] : []),
+    ];
   });
 }
 

@@ -5,7 +5,7 @@ import {
   type ProviderApprovalDecision,
   type ProviderRuntimeEvent,
   type ProviderSession,
-  type ProviderUserInputAnswers,
+  type ProviderUserInputResponse,
   ProviderDriverKind,
   ProviderInstanceId,
   RuntimeRequestId,
@@ -74,6 +74,7 @@ const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonStri
 const PROVIDER = ProviderDriverKind.make("grok");
 const GROK_RESUME_VERSION = 1 as const;
 
+type GrokUserInputAnswers = Readonly<Record<string, string | ReadonlyArray<string>>>;
 function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
   const result = encodeUnknownJsonStringExit(input);
   return Exit.isSuccess(result) ? result.value : undefined;
@@ -91,11 +92,29 @@ interface PendingApproval {
 }
 
 type PendingUserInputResolution =
-  | { readonly _tag: "answered"; readonly answers: ProviderUserInputAnswers }
+  | { readonly _tag: "answered"; readonly answers: GrokUserInputAnswers }
   | { readonly _tag: "cancelled" };
 
 interface PendingUserInput {
   readonly resolution: Deferred.Deferred<PendingUserInputResolution>;
+}
+
+function toGrokUserInputAnswers(
+  answers: Extract<ProviderUserInputResponse, { readonly kind: "submit" }>["answers"],
+): GrokUserInputAnswers {
+  return Object.fromEntries(
+    Object.entries(answers).map(([questionId, answer]) => {
+      if (answer.customInput !== undefined) {
+        return [questionId, answer.customInput] as const;
+      }
+      return [
+        questionId,
+        answer.selectedOptions.length === 1
+          ? answer.selectedOptions[0]!
+          : [...answer.selectedOptions],
+      ] as const;
+    }),
+  );
 }
 
 interface GrokSessionContext {
@@ -628,7 +647,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                         threadId: input.threadId,
                         turnId,
                         requestId: runtimeRequestId,
-                        payload: { questions: extractXAiAskUserQuestions(params) },
+                        payload: {
+                          questions: extractXAiAskUserQuestions(params),
+                          allowedActions: ["submit", "cancel"],
+                        },
                         raw: {
                           source: "acp.grok.extension",
                           method,
@@ -645,7 +667,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                         threadId: input.threadId,
                         turnId,
                         requestId: runtimeRequestId,
-                        payload: { answers: resolvedAnswers },
+                        payload: {
+                          outcome: resolved._tag === "answered" ? "submitted" : "cancelled",
+                          answers: resolvedAnswers,
+                        },
                         raw: {
                           source: "acp.grok.extension",
                           method,
@@ -1382,7 +1407,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
     const respondToUserInput: GrokAdapterShape["respondToUserInput"] = (
       threadId,
       requestId,
-      answers,
+      response: ProviderUserInputResponse,
     ) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(threadId);
@@ -1394,7 +1419,18 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             detail: `Unknown pending user-input request: ${requestId}`,
           });
         }
-        yield* Deferred.succeed(pending.resolution, { _tag: "answered", answers });
+        if (response.kind === "chat") {
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "_x.ai/ask_user_question",
+            detail: "User-input action 'chat' is not supported by Grok.",
+          });
+        }
+        const resolution: PendingUserInputResolution =
+          response.kind === "cancel"
+            ? { _tag: "cancelled" }
+            : { _tag: "answered", answers: toGrokUserInputAnswers(response.answers) };
+        yield* Deferred.succeed(pending.resolution, resolution);
       });
 
     const readThread: GrokAdapterShape["readThread"] = (threadId) =>
