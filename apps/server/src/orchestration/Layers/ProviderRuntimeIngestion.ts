@@ -18,6 +18,7 @@ import {
   type OrchestrationThread,
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
+  type ProviderUserInputTerminalOutcome,
 } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
@@ -30,7 +31,10 @@ import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
-import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
+import {
+  ProjectionTurnRepository,
+  type ProjectionPendingTurnStart,
+} from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { isGitRepository } from "../../git/Utils.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -89,6 +93,17 @@ interface AssistantSegmentState {
   nextSegmentIndex: number;
   activeMessageId: MessageId | null;
 }
+interface ReasoningActivityState {
+  createdAt: string;
+  sequence?: number;
+}
+
+interface RuntimeActivityProjectionContext {
+  taskTitle?: string;
+  queuedTurnStart?: ProjectionPendingTurnStart;
+  reasoningActivity?: ReasoningActivityState;
+  queuedFollowUpAborted?: boolean;
+}
 
 const TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY = 10_000;
 const TURN_MESSAGE_IDS_BY_TURN_TTL = Duration.minutes(120);
@@ -99,6 +114,8 @@ const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
 const TASK_DESCRIPTION_BY_TASK_CACHE_CAPACITY = 10_000;
 const TASK_DESCRIPTION_BY_TASK_TTL = Duration.minutes(120);
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
+const REASONING_ACTIVITY_BY_ITEM_CACHE_CAPACITY = 20_000;
+const REASONING_ACTIVITY_BY_ITEM_TTL = Duration.minutes(120);
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
 
 type TurnStartRequestedDomainEvent = Extract<
@@ -209,6 +226,61 @@ function maxCheckpointTurnCount(
 
 function truncateDetail(value: string, limit = 180): string {
   return value.length > limit ? `${value.slice(0, limit - 3)}...` : value;
+}
+
+const ACTIVITY_DATA_MAX_CHARS = 32_000;
+const ACTIVITY_DATA_TAIL_CHARS = 4_000;
+
+function boundActivityData(value: unknown): unknown {
+  if (typeof value === "string") {
+    if (value.length <= ACTIVITY_DATA_MAX_CHARS) return value;
+    return {
+      truncated: true,
+      originalLength: value.length,
+      summary: `truncated string (${value.length} chars)`,
+      tail: value.slice(-ACTIVITY_DATA_TAIL_CHARS),
+    };
+  }
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    return { truncated: true, summary: "unserializable value" };
+  }
+  if (serialized === undefined) {
+    return { truncated: true, summary: "unserializable value" };
+  }
+  if (serialized.length <= ACTIVITY_DATA_MAX_CHARS) return value;
+  return {
+    truncated: true,
+    originalLength: serialized.length,
+    summary: `truncated value (${serialized.length} chars)`,
+    tail: serialized.slice(-ACTIVITY_DATA_TAIL_CHARS),
+  };
+}
+
+function userInputResolutionPresentation(outcome: ProviderUserInputTerminalOutcome | undefined): {
+  readonly summary: string;
+  readonly tone: "info" | "error";
+} {
+  switch (outcome) {
+    case "submitted":
+      return { summary: "User input submitted", tone: "info" };
+    case "chat":
+      return { summary: "Continued in chat", tone: "info" };
+    case "cancelled":
+      return { summary: "User input cancelled", tone: "info" };
+    case "timed_out":
+      return { summary: "User input timed out", tone: "error" };
+    case "stale":
+      return { summary: "User input request expired", tone: "error" };
+    case "aborted":
+      return { summary: "User input aborted", tone: "error" };
+    case "process_exited":
+      return { summary: "User input interrupted by provider exit", tone: "error" };
+    case undefined:
+      return { summary: "User input resolved", tone: "info" };
+  }
 }
 
 function normalizeProposedPlanMarkdown(planMarkdown: string | undefined): string | undefined {
@@ -363,7 +435,7 @@ function taskLinkageActivityFields(payload: Record<string, unknown>): Record<str
 
 export function runtimeEventToActivities(
   event: ProviderRuntimeEvent,
-  taskTitle?: string,
+  context: RuntimeActivityProjectionContext = {},
 ): ReadonlyArray<OrchestrationThreadActivity> {
   const maybeSequence = (() => {
     const eventWithSequence = event as ProviderRuntimeEvent & { sessionSequence?: number };
@@ -372,6 +444,32 @@ export function runtimeEventToActivities(
       : {};
   })();
   switch (event.type) {
+    case "content.delta": {
+      if (event.payload.streamKind !== "reasoning_text") {
+        return [];
+      }
+      const itemId = String(event.itemId ?? event.eventId);
+      const reasoningActivity = context.reasoningActivity;
+      return [
+        {
+          id: EventId.make(`reasoning:${event.threadId}:${itemId}`),
+          createdAt: reasoningActivity?.createdAt ?? event.createdAt,
+          tone: "info",
+          kind: "reasoning.delta",
+          summary: "Thinking",
+          payload: {
+            ...(event.itemId !== undefined ? { itemId: event.itemId } : {}),
+            streamKind: event.payload.streamKind,
+            detail: event.payload.delta,
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...(reasoningActivity?.sequence !== undefined
+            ? { sequence: reasoningActivity.sequence }
+            : maybeSequence),
+        },
+      ];
+    }
+
     case "request.opened": {
       if (event.payload.requestType === "tool_user_input") {
         return [];
@@ -400,6 +498,20 @@ export function runtimeEventToActivities(
             ...(event.payload.detail ? { detail: event.payload.detail } : {}),
             ...(event.payload.appName ? { appName: event.payload.appName } : {}),
             ...(event.payload.options ? { options: event.payload.options } : {}),
+            ...(event.payload.args !== undefined ? { args: event.payload.args } : {}),
+            ...(event.payload.toolName !== undefined ? { toolName: event.payload.toolName } : {}),
+            ...(event.payload.approvalMode !== undefined
+              ? { approvalMode: event.payload.approvalMode }
+              : {}),
+            ...(event.payload.tier !== undefined ? { tier: event.payload.tier } : {}),
+            ...(event.payload.reason !== undefined ? { reason: event.payload.reason } : {}),
+            ...(event.payload.details !== undefined ? { details: event.payload.details } : {}),
+            ...(event.payload.providerSafetyChecks !== undefined
+              ? { providerSafetyChecks: event.payload.providerSafetyChecks }
+              : {}),
+            ...(event.payload.allowedDecisions !== undefined
+              ? { allowedDecisions: event.payload.allowedDecisions }
+              : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -424,6 +536,7 @@ export function runtimeEventToActivities(
             ...(requestKind ? { requestKind } : {}),
             requestType: event.payload.requestType,
             ...(event.payload.decision ? { decision: event.payload.decision } : {}),
+            ...(event.payload.outcome ? { outcome: event.payload.outcome } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -508,72 +621,6 @@ export function runtimeEventToActivities(
       ];
     }
 
-    case "turn.queued": {
-      return [
-        {
-          id: event.eventId,
-          createdAt: event.createdAt,
-          tone: "info",
-          kind: "turn.queued",
-          summary: "Turn queued",
-          payload: event.payload,
-          turnId: toTurnId(event.turnId) ?? null,
-          ...maybeSequence,
-        },
-      ];
-    }
-
-    case "turn.aborted": {
-      return [
-        {
-          id: event.eventId,
-          createdAt: event.createdAt,
-          tone: "info",
-          kind: "turn.aborted",
-          summary: "Turn cancelled",
-          payload: event.payload,
-          turnId: toTurnId(event.turnId) ?? null,
-          ...maybeSequence,
-        },
-      ];
-    }
-
-    case "plan.review.requested": {
-      return [
-        {
-          id: event.eventId,
-          createdAt: event.createdAt,
-          tone: "info",
-          kind: "plan.review.requested",
-          summary: "Plan review requested",
-          payload: {
-            requestId: event.requestId,
-            ...event.payload,
-          },
-          turnId: toTurnId(event.turnId) ?? null,
-          ...maybeSequence,
-        },
-      ];
-    }
-
-    case "plan.review.resolved": {
-      return [
-        {
-          id: event.eventId,
-          createdAt: event.createdAt,
-          tone: "info",
-          kind: "plan.review.resolved",
-          summary: "Plan review resolved",
-          payload: {
-            requestId: event.requestId,
-            ...event.payload,
-          },
-          turnId: toTurnId(event.turnId) ?? null,
-          ...maybeSequence,
-        },
-      ];
-    }
-
     case "user-input.requested": {
       return [
         {
@@ -585,6 +632,11 @@ export function runtimeEventToActivities(
           payload: {
             ...(event.requestId ? { requestId: event.requestId } : {}),
             questions: event.payload.questions,
+            ...(event.payload.allowedActions !== undefined
+              ? { allowedActions: event.payload.allowedActions }
+              : {}),
+            ...(event.payload.timeout !== undefined ? { timeout: event.payload.timeout } : {}),
+            ...(event.provider === "omp" ? { supportsNote: true } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -593,22 +645,123 @@ export function runtimeEventToActivities(
     }
 
     case "user-input.resolved": {
+      const presentation = userInputResolutionPresentation(event.payload.outcome);
       return [
         {
           id: event.eventId,
           createdAt: event.createdAt,
-          tone: "info",
+          tone: presentation.tone,
           kind: "user-input.resolved",
-          summary: "User input submitted",
+          summary: presentation.summary,
           payload: {
             ...(event.requestId ? { requestId: event.requestId } : {}),
-            answers: event.payload.answers,
+            ...(event.payload.answers !== undefined ? { answers: event.payload.answers } : {}),
+            ...(event.payload.outcome ? { outcome: event.payload.outcome } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
         },
       ];
     }
+
+    case "turn.queued":
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "turn.queued",
+          summary: "Follow-up queued",
+          payload: {
+            deliveryMode: event.payload.deliveryMode,
+            optionFingerprint: event.payload.optionFingerprint,
+            queuePosition: event.payload.queuePosition,
+            ...(context.queuedTurnStart !== undefined
+              ? {
+                  messageId: context.queuedTurnStart.messageId,
+                  sourceProposedPlanThreadId: context.queuedTurnStart.sourceProposedPlanThreadId,
+                  sourceProposedPlanId: context.queuedTurnStart.sourceProposedPlanId,
+                  workflow: context.queuedTurnStart.workflow,
+                  requestedAt: context.queuedTurnStart.requestedAt,
+                }
+              : {}),
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+
+    case "turn.aborted":
+      return context.queuedFollowUpAborted
+        ? [
+            {
+              id: event.eventId,
+              createdAt: event.createdAt,
+              tone: "info",
+              kind: "turn.aborted",
+              summary: "Queued follow-up cancelled",
+              payload: {
+                queuedFollowUp: true,
+                reason: event.payload.reason,
+              },
+              turnId: toTurnId(event.turnId) ?? null,
+              ...maybeSequence,
+            },
+          ]
+        : [];
+
+    case "plan.review.requested":
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "plan.review.requested",
+          summary: event.payload.title,
+          payload: {
+            ...(event.requestId ? { requestId: event.requestId } : {}),
+            title: event.payload.title,
+            planArtifactId: event.payload.planArtifactId,
+            planArtifactUrl: event.payload.planArtifactUrl,
+            planMarkdown: event.payload.planMarkdown,
+            allowedContextStrategies: event.payload.allowedContextStrategies,
+            ...(event.payload.contextUsage !== undefined
+              ? { contextUsage: event.payload.contextUsage }
+              : {}),
+            executionModels: event.payload.executionModels,
+            ...(event.payload.defaultExecutionModel !== undefined
+              ? { defaultExecutionModel: event.payload.defaultExecutionModel }
+              : {}),
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+
+    case "plan.review.resolved":
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "plan.review.resolved",
+          summary: `Plan review ${event.payload.outcome}`,
+          payload: {
+            ...(event.requestId ? { requestId: event.requestId } : {}),
+            outcome: event.payload.outcome,
+            ...(event.payload.decision !== undefined ? { decision: event.payload.decision } : {}),
+            ...(event.payload.clientTurnId !== undefined
+              ? { clientTurnId: event.payload.clientTurnId }
+              : {}),
+            ...(event.payload.resume !== undefined ? { resume: event.payload.resume } : {}),
+            ...(event.payload.planDigest !== undefined
+              ? { planDigest: event.payload.planDigest }
+              : {}),
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
 
     case "task.started": {
       return [
@@ -795,7 +948,7 @@ export function runtimeEventToActivities(
           payload: {
             taskId: event.payload.taskId,
             status: event.payload.status,
-            ...(taskTitle ? { title: truncateDetail(taskTitle, 120) } : {}),
+            ...(context.taskTitle ? { title: truncateDetail(context.taskTitle, 120) } : {}),
             // summary + detail mirror task.progress: clients label the row from
             // summary and keep detail for the preview/expanded body.
             ...(event.payload.summary
@@ -868,17 +1021,23 @@ export function runtimeEventToActivities(
       // updates; `item.completed` below still persists the full payload.
       return [
         projectActivityPayload({
-          id: event.eventId,
+          id:
+            event.itemId !== undefined
+              ? EventId.make(`tool-update:${event.threadId}:${event.itemId}`)
+              : event.eventId,
           createdAt: event.createdAt,
-          tone: "tool",
+          tone: event.payload.status === "failed" ? "error" : "tool",
           kind: "tool.updated",
           summary: event.payload.title ?? "Tool updated",
           payload: {
+            ...(event.itemId !== undefined ? { itemId: event.itemId } : {}),
             itemType: event.payload.itemType,
             ...(event.itemId !== undefined ? { toolCallId: event.itemId } : {}),
             ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
+            ...(event.payload.data !== undefined
+              ? { data: boundActivityData(event.payload.data) }
+              : {}),
             ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
             ...(event.payload.parentToolUseId
               ? { parentToolUseId: event.payload.parentToolUseId }
@@ -894,19 +1053,24 @@ export function runtimeEventToActivities(
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
+      const failed = event.payload.status === "failed";
+      const title = event.payload.title ?? "Tool";
       return [
         {
           id: event.eventId,
           createdAt: event.createdAt,
-          tone: "tool",
+          tone: failed ? "error" : "tool",
           kind: "tool.completed",
-          summary: event.payload.title ?? "Tool",
+          summary: failed ? `${title} failed` : title,
           payload: {
+            ...(event.itemId !== undefined ? { itemId: event.itemId } : {}),
             itemType: event.payload.itemType,
             ...(event.itemId !== undefined ? { toolCallId: event.itemId } : {}),
             ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
+            ...(event.payload.data !== undefined
+              ? { data: boundActivityData(event.payload.data) }
+              : {}),
             ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
             ...(event.payload.parentToolUseId
               ? { parentToolUseId: event.payload.parentToolUseId }
@@ -930,11 +1094,14 @@ export function runtimeEventToActivities(
           kind: "tool.started",
           summary: `${event.payload.title ?? "Tool"} started`,
           payload: {
+            ...(event.itemId !== undefined ? { itemId: event.itemId } : {}),
             itemType: event.payload.itemType,
             ...(event.itemId !== undefined ? { toolCallId: event.itemId } : {}),
             ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
+            ...(event.payload.data !== undefined
+              ? { data: boundActivityData(event.payload.data) }
+              : {}),
             ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
             ...(event.payload.parentToolUseId
               ? { parentToolUseId: event.payload.parentToolUseId }
@@ -1002,6 +1169,13 @@ const make = Effect.gen(function* () {
     lookup: () => Effect.succeed(""),
   });
 
+  const reasoningActivityByItemKey = yield* Cache.make<string, ReasoningActivityState>({
+    capacity: REASONING_ACTIVITY_BY_ITEM_CACHE_CAPACITY,
+    timeToLive: REASONING_ACTIVITY_BY_ITEM_TTL,
+    lookup: () =>
+      Effect.die(new Error("reasoning activity state requires explicit initialization")),
+  });
+
   const rememberTaskDescription = (threadId: ThreadId, taskId: string, description: string) =>
     Cache.set(taskDescriptionByTaskKey, providerTaskKey(threadId, taskId), description);
 
@@ -1014,6 +1188,28 @@ const make = Effect.gen(function* () {
         Option.filter(description, (value) => value.length > 0).pipe(Option.getOrUndefined),
       ),
     );
+
+  const appendReasoningActivity = (
+    event: Extract<ProviderRuntimeEvent, { type: "content.delta" }>,
+  ) => {
+    const itemId = String(event.itemId ?? event.eventId);
+    const key = `${event.threadId}:${itemId}`;
+    const eventWithSequence = event as ProviderRuntimeEvent & { sessionSequence?: number };
+    return Cache.getOption(reasoningActivityByItemKey, key).pipe(
+      Effect.flatMap((existingState) => {
+        const existing = Option.getOrUndefined(existingState);
+        const nextState: ReasoningActivityState = {
+          createdAt: existing?.createdAt ?? event.createdAt,
+          ...(existing?.sequence !== undefined
+            ? { sequence: existing.sequence }
+            : eventWithSequence.sessionSequence !== undefined
+              ? { sequence: eventWithSequence.sessionSequence }
+              : {}),
+        };
+        return Cache.set(reasoningActivityByItemKey, key, nextState).pipe(Effect.as(nextState));
+      }),
+    );
+  };
 
   const resolveThreadDetail = Effect.fn("resolveThreadDetail")(function* (threadId: ThreadId) {
     return yield* projectionSnapshotQuery
@@ -1440,6 +1636,7 @@ const make = Effect.gen(function* () {
       const assistantSegmentKeys = Array.from(yield* Cache.keys(assistantSegmentStateByTurnKey));
       const proposedPlanKeys = Array.from(yield* Cache.keys(bufferedProposedPlanById));
       const taskDescriptionKeys = Array.from(yield* Cache.keys(taskDescriptionByTaskKey));
+      const reasoningActivityKeys = Array.from(yield* Cache.keys(reasoningActivityByItemKey));
       yield* Effect.forEach(
         turnKeys,
         (key) =>
@@ -1481,27 +1678,45 @@ const make = Effect.gen(function* () {
           key.startsWith(prefix) ? Cache.invalidate(taskDescriptionByTaskKey, key) : Effect.void,
         { concurrency: 1 },
       ).pipe(Effect.asVoid);
+      yield* Effect.forEach(
+        reasoningActivityKeys,
+        (key) =>
+          key.startsWith(prefix) ? Cache.invalidate(reasoningActivityByItemKey, key) : Effect.void,
+        { concurrency: 1 },
+      ).pipe(Effect.asVoid);
     });
 
-  const getSourceProposedPlanReferenceForPendingTurnStart = Effect.fn(
-    "getSourceProposedPlanReferenceForPendingTurnStart",
-  )(function* (threadId: ThreadId) {
+  const getSourceProposedPlanReferenceForTurnStart = Effect.fn(
+    "getSourceProposedPlanReferenceForTurnStart",
+  )(function* (threadId: ThreadId, turnId: TurnId) {
+    const correlatedTurn = yield* projectionTurnRepository.getByTurnId({ threadId, turnId });
+    if (
+      Option.isSome(correlatedTurn) &&
+      correlatedTurn.value.sourceProposedPlanThreadId !== null &&
+      correlatedTurn.value.sourceProposedPlanId !== null
+    ) {
+      return {
+        sourceThreadId: correlatedTurn.value.sourceProposedPlanThreadId,
+        sourcePlanId: correlatedTurn.value.sourceProposedPlanId,
+      } as const;
+    }
+    if (Option.isSome(correlatedTurn)) {
+      return null;
+    }
+
     const pendingTurnStart = yield* projectionTurnRepository.getPendingTurnStartByThreadId({
       threadId,
     });
-    if (Option.isNone(pendingTurnStart)) {
+    if (
+      Option.isNone(pendingTurnStart) ||
+      pendingTurnStart.value.sourceProposedPlanThreadId === null ||
+      pendingTurnStart.value.sourceProposedPlanId === null
+    ) {
       return null;
     }
-
-    const sourceThreadId = pendingTurnStart.value.sourceProposedPlanThreadId;
-    const sourcePlanId = pendingTurnStart.value.sourceProposedPlanId;
-    if (sourceThreadId === null || sourcePlanId === null) {
-      return null;
-    }
-
     return {
-      sourceThreadId,
-      sourcePlanId,
+      sourceThreadId: pendingTurnStart.value.sourceProposedPlanThreadId,
+      sourcePlanId: pendingTurnStart.value.sourceProposedPlanId,
     } as const;
   });
 
@@ -1525,22 +1740,7 @@ const make = Effect.gen(function* () {
       return null;
     }
 
-    const concreteTurn = yield* projectionTurnRepository.getByTurnId({
-      threadId,
-      turnId: eventTurnId,
-    });
-    if (
-      Option.isSome(concreteTurn) &&
-      concreteTurn.value.sourceProposedPlanThreadId !== null &&
-      concreteTurn.value.sourceProposedPlanId !== null
-    ) {
-      return {
-        sourceThreadId: concreteTurn.value.sourceProposedPlanThreadId,
-        sourcePlanId: concreteTurn.value.sourceProposedPlanId,
-      } as const;
-    }
-
-    return yield* getSourceProposedPlanReferenceForPendingTurnStart(threadId);
+    return yield* getSourceProposedPlanReferenceForTurnStart(threadId, eventTurnId);
   });
 
   const markSourceProposedPlanImplemented = Effect.fn("markSourceProposedPlanImplemented")(
@@ -1595,8 +1795,24 @@ const make = Effect.gen(function* () {
       const pendingTurnStart = yield* projectionTurnRepository.getPendingTurnStartByThreadId({
         threadId: thread.id,
       });
-      const hasPendingTurnStart =
-        Option.isSome(pendingTurnStart) && thread.session?.status === "starting";
+      const needsCorrelatedTurn = event.type === "turn.started" || event.type === "turn.aborted";
+      const eventProjectionTurn =
+        !needsCorrelatedTurn || eventTurnId === undefined
+          ? Option.none()
+          : yield* projectionTurnRepository.getByTurnId({
+              threadId: thread.id,
+              turnId: eventTurnId,
+            });
+      const hasCorrelatedPendingTurn =
+        Option.isSome(eventProjectionTurn) && eventProjectionTurn.value.state === "pending";
+      const hasAnyPendingTurn =
+        Option.isSome(pendingTurnStart) ||
+        hasCorrelatedPendingTurn ||
+        (thread.session?.status === "starting" &&
+          (yield* projectionTurnRepository.listByThreadId({ threadId: thread.id })).some(
+            (turn) => turn.state === "pending",
+          ));
+      const hasPendingTurnStart = hasAnyPendingTurn && thread.session?.status === "starting";
 
       const conflictsWithActiveTurn =
         activeTurnId !== null && eventTurnId !== undefined && !sameId(activeTurnId, eventTurnId);
@@ -1611,8 +1827,26 @@ const make = Effect.gen(function* () {
       const conflictingTurnStartIsPendingTurnStart =
         event.type === "turn.started" && conflictsWithActiveTurn
           ? sameId(yield* getExpectedProviderTurnIdForThread(thread.id), eventTurnId) &&
-            Option.isSome(pendingTurnStart)
+            (hasCorrelatedPendingTurn || Option.isSome(pendingTurnStart))
           : false;
+
+      // Cancel of a pending follow-up is correlated by turnId even when the
+      // session has no activeTurnId yet (or the active turn is a different one).
+      // Settle only that pending row; do not run the generic session interrupt path.
+      const isCorrelatedQueuedFollowUpAbort =
+        event.type === "turn.aborted" &&
+        eventTurnId !== undefined &&
+        hasCorrelatedPendingTurn &&
+        (conflictsWithActiveTurn || activeTurnId === null);
+      const activeTurnAbortedWithQueuedFollowUps =
+        event.type === "turn.aborted" &&
+        eventTurnId !== undefined &&
+        activeTurnId !== null &&
+        sameId(activeTurnId, eventTurnId) &&
+        (yield* projectionTurnRepository.listByThreadId({ threadId: thread.id })).some(
+          (turn) =>
+            turn.turnId !== null && !sameId(turn.turnId, eventTurnId) && turn.state === "pending",
+        );
 
       const shouldApplyThreadLifecycle = (() => {
         if (!STRICT_PROVIDER_LIFECYCLE_GUARD) {
@@ -1626,6 +1860,18 @@ const make = Effect.gen(function* () {
             return true;
           case "turn.started":
             return !conflictsWithActiveTurn || conflictingTurnStartIsPendingTurnStart;
+          case "turn.aborted":
+            // Pending follow-up cancel must not flip the session to interrupted.
+            if (isCorrelatedQueuedFollowUpAbort) {
+              return false;
+            }
+            if (conflictsWithActiveTurn || missingTurnForActiveTurn) {
+              return false;
+            }
+            if (activeTurnId !== null && eventTurnId !== undefined) {
+              return sameId(activeTurnId, eventTurnId);
+            }
+            return true;
           case "turn.completed":
             if (conflictsWithActiveTurn || missingTurnForActiveTurn) {
               return false;
@@ -1646,10 +1892,62 @@ const make = Effect.gen(function* () {
             return true;
         }
       })();
+
+      if (isCorrelatedQueuedFollowUpAbort) {
+        yield* projectionTurnRepository.settlePendingTurnByTurnId({
+          threadId: thread.id,
+          turnId: eventTurnId,
+          state: "interrupted",
+          completedAt: now,
+        });
+      }
+      if (activeTurnAbortedWithQueuedFollowUps && Option.isSome(eventProjectionTurn)) {
+        yield* projectionTurnRepository.upsertByTurnId({
+          ...eventProjectionTurn.value,
+          state: "interrupted",
+          completedAt: eventProjectionTurn.value.completedAt ?? now,
+        });
+      }
       const acceptedTurnStartedSourcePlan =
         event.type === "turn.started" && shouldApplyThreadLifecycle
           ? yield* getSourceProposedPlanReferenceForAcceptedTurnStart(thread.id, eventTurnId)
           : null;
+      const configurationBelongsToActiveProvider =
+        event.type !== "session.configured" ||
+        event.providerInstanceId === undefined ||
+        thread.session?.providerInstanceId === undefined ||
+        sameId(event.providerInstanceId, thread.session.providerInstanceId);
+      if (
+        event.type === "session.configured" &&
+        configurationBelongsToActiveProvider &&
+        event.payload.interactionMode !== undefined
+      ) {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.interaction-mode.apply",
+          commandId: yield* providerCommandId(event, "provider-interaction-mode-apply"),
+          threadId: thread.id,
+          interactionMode: event.payload.interactionMode,
+          ...(event.payload.workflow !== undefined ? { workflow: event.payload.workflow } : {}),
+          requestCommandId: yield* providerCommandId(
+            event,
+            "provider-interaction-mode-notification",
+          ),
+          causationEventId: event.eventId,
+          createdAt: now,
+        });
+      }
+      if (
+        event.type === "session.configured" &&
+        configurationBelongsToActiveProvider &&
+        event.payload.modelSelection !== undefined
+      ) {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.meta.update",
+          commandId: yield* providerCommandId(event, "provider-model-selection-apply"),
+          threadId: thread.id,
+          modelSelection: event.payload.modelSelection,
+        });
+      }
 
       if (
         event.type === "session.started" ||
@@ -1657,7 +1955,8 @@ const make = Effect.gen(function* () {
         event.type === "session.exited" ||
         event.type === "thread.started" ||
         event.type === "turn.started" ||
-        event.type === "turn.completed"
+        event.type === "turn.completed" ||
+        event.type === "turn.aborted"
       ) {
         const status = (() => {
           switch (event.type) {
@@ -1673,6 +1972,8 @@ const make = Effect.gen(function* () {
               return normalizeRuntimeTurnState(event.payload.state) === "failed"
                 ? "error"
                 : "ready";
+            case "turn.aborted":
+              return activeTurnAbortedWithQueuedFollowUps ? "ready" : "interrupted";
             case "session.started":
             case "thread.started":
               // Provider thread/session start notifications can arrive during an
@@ -1683,7 +1984,9 @@ const make = Effect.gen(function* () {
         const nextActiveTurnId =
           event.type === "turn.started"
             ? (eventTurnId ?? null)
-            : event.type === "turn.completed" || event.type === "session.exited"
+            : event.type === "turn.completed" ||
+                event.type === "turn.aborted" ||
+                event.type === "session.exited"
               ? null
               : event.type === "session.state.changed" &&
                   !sessionStatusAllowsActiveTurn(
@@ -1792,7 +2095,9 @@ const make = Effect.gen(function* () {
       }
 
       const pauseForUserTurnId =
-        event.type === "request.opened" || event.type === "user-input.requested"
+        event.type === "request.opened" ||
+        event.type === "user-input.requested" ||
+        event.type === "plan.review.requested"
           ? toTurnId(event.turnId)
           : undefined;
       if (pauseForUserTurnId) {
@@ -1801,6 +2106,12 @@ const make = Effect.gen(function* () {
           serverSettingsService.getSettings,
           (settings) => (settings.enableLegacyTokenStreaming ? "streaming" : "buffered"),
         );
+        const pauseCommandTag =
+          event.type === "request.opened"
+            ? "request-opened"
+            : event.type === "user-input.requested"
+              ? "user-input-requested"
+              : "plan-review-requested";
         const flushedMessageIds =
           assistantDeliveryMode === "buffered"
             ? yield* flushBufferedAssistantMessagesForTurn({
@@ -1808,10 +2119,7 @@ const make = Effect.gen(function* () {
                 threadId: thread.id,
                 turnId: pauseForUserTurnId,
                 createdAt: now,
-                commandTag:
-                  event.type === "request.opened"
-                    ? "assistant-delta-flush-on-request-opened"
-                    : "assistant-delta-flush-on-user-input-requested",
+                commandTag: `assistant-delta-flush-on-${pauseCommandTag}`,
               })
             : new Set<MessageId>();
         yield* finalizeActiveAssistantSegmentForTurn({
@@ -1819,14 +2127,8 @@ const make = Effect.gen(function* () {
           threadId: thread.id,
           turnId: pauseForUserTurnId,
           createdAt: now,
-          commandTag:
-            event.type === "request.opened"
-              ? "assistant-complete-on-request-opened"
-              : "assistant-complete-on-user-input-requested",
-          finalDeltaCommandTag:
-            event.type === "request.opened"
-              ? "assistant-delta-finalize-on-request-opened"
-              : "assistant-delta-finalize-on-user-input-requested",
+          commandTag: `assistant-complete-on-${pauseCommandTag}`,
+          finalDeltaCommandTag: `assistant-delta-finalize-on-${pauseCommandTag}`,
           hasProjectedMessage:
             detailedThread !== null &&
             hasAssistantMessageForTurn(detailedThread.messages, pauseForUserTurnId, {
@@ -1924,7 +2226,7 @@ const make = Effect.gen(function* () {
         });
       }
 
-      if (event.type === "turn.completed") {
+      if (event.type === "turn.completed" || event.type === "turn.aborted") {
         const detailedThread = yield* getLoadedThreadDetail();
         const messages = detailedThread?.messages ?? [];
         const proposedPlans = detailedThread?.proposedPlans ?? [];
@@ -2108,7 +2410,18 @@ const make = Effect.gen(function* () {
         }
       }
 
-      const activities = runtimeEventToActivities(event, taskTitle);
+      const reasoningActivity =
+        event.type === "content.delta" && event.payload.streamKind === "reasoning_text"
+          ? yield* appendReasoningActivity(event)
+          : undefined;
+      const activities = runtimeEventToActivities(event, {
+        ...(taskTitle !== undefined ? { taskTitle } : {}),
+        ...(event.type === "turn.queued" && Option.isSome(pendingTurnStart)
+          ? { queuedTurnStart: pendingTurnStart.value }
+          : {}),
+        ...(reasoningActivity !== undefined ? { reasoningActivity } : {}),
+        ...(isCorrelatedQueuedFollowUpAbort ? { queuedFollowUpAborted: true } : {}),
+      });
       yield* Effect.forEach(activities, (activity) =>
         providerCommandId(event, "thread-activity-append").pipe(
           Effect.flatMap((commandId) =>
@@ -2117,11 +2430,14 @@ const make = Effect.gen(function* () {
               commandId,
               threadId: thread.id,
               activity,
-              createdAt: activity.createdAt,
+              createdAt: event.createdAt,
             }),
           ),
         ),
       ).pipe(Effect.asVoid);
+      if (event.type === "item.completed" && event.itemId !== undefined) {
+        yield* Cache.invalidate(reasoningActivityByItemKey, `${thread.id}:${String(event.itemId)}`);
+      }
     });
 
   const processDomainEvent = (_event: TurnStartRequestedDomainEvent) => Effect.void;

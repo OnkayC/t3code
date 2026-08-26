@@ -2076,11 +2076,35 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         });
 
         yield* appendAndProject({
+          type: "thread.session-set",
+          eventId: EventId.make("evt-conflict-running"),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-conflict"),
+          occurredAt: "2026-02-26T13:00:02.000Z",
+          commandId: CommandId.make("cmd-conflict-running"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-conflict-running"),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-conflict"),
+            session: {
+              threadId: ThreadId.make("thread-conflict"),
+              status: "running",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: TurnId.make("turn-interrupted"),
+              lastError: null,
+              updatedAt: "2026-02-26T13:00:02.000Z",
+            },
+          },
+        });
+
+        yield* appendAndProject({
           type: "thread.turn-interrupt-requested",
           eventId: EventId.make("evt-conflict-3"),
           aggregateKind: "thread",
           aggregateId: ThreadId.make("thread-conflict"),
-          occurredAt: "2026-02-26T13:00:02.000Z",
+          occurredAt: "2026-02-26T13:00:02.250Z",
           commandId: CommandId.make("cmd-conflict-3"),
           causationEventId: null,
           correlationId: CorrelationId.make("cmd-conflict-3"),
@@ -2088,7 +2112,39 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           payload: {
             threadId: ThreadId.make("thread-conflict"),
             turnId: TurnId.make("turn-interrupted"),
-            createdAt: "2026-02-26T13:00:02.000Z",
+            createdAt: "2026-02-26T13:00:02.250Z",
+          },
+        });
+
+        const pendingInterruptRows = yield* sql<{ readonly state: string }>`
+          SELECT state
+          FROM projection_turns
+          WHERE thread_id = 'thread-conflict'
+            AND turn_id = 'turn-interrupted'
+        `;
+        assert.deepEqual(pendingInterruptRows, [{ state: "running" }]);
+
+        yield* appendAndProject({
+          type: "thread.session-set",
+          eventId: EventId.make("evt-conflict-interrupted"),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-conflict"),
+          occurredAt: "2026-02-26T13:00:02.500Z",
+          commandId: CommandId.make("cmd-conflict-interrupted"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-conflict-interrupted"),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-conflict"),
+            session: {
+              threadId: ThreadId.make("thread-conflict"),
+              status: "interrupted",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: "2026-02-26T13:00:02.500Z",
+            },
           },
         });
 
@@ -3107,6 +3163,23 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-pending-turn-terminal-test-
               createdAt: requestedAt,
             },
           });
+          if (status === "stopped") {
+            yield* eventStore.append({
+              type: "thread.session-stop-requested",
+              eventId: EventId.make("evt-terminal-stop-requested"),
+              aggregateKind: "thread",
+              aggregateId: threadId,
+              occurredAt: requestedAt,
+              commandId: CommandId.make("cmd-terminal-stop-requested"),
+              causationEventId: null,
+              correlationId: CorrelationId.make("cmd-terminal-stop-requested"),
+              metadata: {},
+              payload: {
+                threadId,
+                createdAt: requestedAt,
+              },
+            });
+          }
           yield* eventStore.append({
             type: "thread.session-set",
             eventId: EventId.make(`evt-terminal-session-${status}`),
@@ -3141,6 +3214,56 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-pending-turn-terminal-test-
             AND state = 'pending'
         `;
         assert.deepEqual(pendingRows, []);
+      }),
+    );
+    it.effect("retains pending turn starts until provider stop succeeds", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = ThreadId.make("thread-stop-request-pending");
+        const requestedAt = "2026-02-26T14:15:00.000Z";
+
+        yield* eventStore.append({
+          type: "thread.turn-start-requested",
+          eventId: EventId.make("evt-stop-request-pending-turn"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: requestedAt,
+          commandId: CommandId.make("cmd-stop-request-pending-turn"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-stop-request-pending-turn"),
+          metadata: {},
+          payload: {
+            threadId,
+            messageId: MessageId.make("message-stop-request-pending"),
+            runtimeMode: "approval-required",
+            createdAt: requestedAt,
+          },
+        });
+        yield* eventStore.append({
+          type: "thread.session-stop-requested",
+          eventId: EventId.make("evt-stop-request-pending"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: requestedAt,
+          commandId: CommandId.make("cmd-stop-request-pending"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-stop-request-pending"),
+          metadata: {},
+          payload: { threadId, createdAt: requestedAt },
+        });
+
+        yield* projectionPipeline.bootstrap;
+
+        const pendingRows = yield* sql<{ readonly threadId: string }>`
+          SELECT thread_id AS "threadId"
+          FROM projection_turns
+          WHERE thread_id = ${threadId}
+            AND turn_id IS NULL
+            AND state = 'pending'
+        `;
+        assert.deepEqual(pendingRows, [{ threadId }]);
       }),
     );
     it.effect("correlates queued turns with their pending request metadata", () =>

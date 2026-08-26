@@ -1,7 +1,9 @@
 import {
   EventId,
   ProviderDriverKind,
+  RuntimeItemId,
   RuntimeTaskId,
+  RuntimeRequestId,
   ThreadId,
   TurnId,
   type ProviderRuntimeEvent,
@@ -154,16 +156,139 @@ describe("runtimeEventToActivities turn lifecycle", () => {
       payload: { reason: "Queued follow-up cancelled." },
     } satisfies ProviderRuntimeEvent;
 
-    expect(runtimeEventToActivities(event)).toEqual([
+    expect(runtimeEventToActivities(event, { queuedFollowUpAborted: true })).toEqual([
       {
         id: "evt-turn-aborted",
         createdAt: base.createdAt,
         tone: "info",
         kind: "turn.aborted",
-        summary: "Turn cancelled",
-        payload: { reason: "Queued follow-up cancelled." },
+        summary: "Queued follow-up cancelled",
+        payload: { queuedFollowUp: true, reason: "Queued follow-up cancelled." },
         turnId: "turn-queued",
       },
     ]);
+  });
+});
+
+describe("runtimeEventToActivities persisted data bounds", () => {
+  it("compacts oversized tool result data before persistence", () => {
+    const event = {
+      ...base,
+      type: "item.completed",
+      eventId: EventId.make("evt-large-tool-result"),
+      turnId: TurnId.make("turn-large-tool-result"),
+      itemId: RuntimeItemId.make("item-large-tool-result"),
+      payload: {
+        itemType: "dynamic_tool_call",
+        status: "completed",
+        title: "Large tool",
+        data: { rawOutput: "x".repeat(100_000) },
+      },
+    } satisfies ProviderRuntimeEvent;
+
+    const [activity] = runtimeEventToActivities(event);
+    const payload = activity?.payload as Record<string, unknown>;
+    const data = payload.data as Record<string, unknown>;
+    expect(JSON.stringify(payload).length).toBeLessThan(40_000);
+    expect(data).toMatchObject({
+      truncated: true,
+      originalLength: expect.any(Number),
+      summary: expect.stringContaining("truncated value"),
+      tail: expect.any(String),
+    });
+  });
+});
+
+describe("runtimeEventToActivities reasoning projection", () => {
+  it("persists canonical reasoning deltas without projecting assistant text as activity", () => {
+    const reasoning = {
+      ...base,
+      type: "content.delta",
+      eventId: EventId.make("evt-reasoning"),
+      turnId: TurnId.make("turn-1"),
+      itemId: RuntimeItemId.make("item-reasoning"),
+      payload: {
+        streamKind: "reasoning_text",
+        delta: "Inspecting the projection path",
+      },
+    } satisfies ProviderRuntimeEvent;
+    const assistant = {
+      ...reasoning,
+      eventId: EventId.make("evt-assistant"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "The projection is intact.",
+      },
+    } satisfies ProviderRuntimeEvent;
+
+    expect(
+      runtimeEventToActivities(reasoning, {
+        reasoningActivity: {
+          createdAt: base.createdAt,
+          sequence: 7,
+        },
+      }),
+    ).toEqual([
+      {
+        id: EventId.make("reasoning:thread-1:item-reasoning"),
+        createdAt: base.createdAt,
+        tone: "info",
+        kind: "reasoning.delta",
+        summary: "Thinking",
+        payload: {
+          itemId: RuntimeItemId.make("item-reasoning"),
+          streamKind: "reasoning_text",
+          detail: "Inspecting the projection path",
+        },
+        turnId: TurnId.make("turn-1"),
+        sequence: 7,
+      },
+    ]);
+    expect(runtimeEventToActivities(assistant)).toEqual([]);
+  });
+});
+
+describe("runtimeEventToActivities user-input terminal projection", () => {
+  for (const [outcome, summary, tone] of [
+    ["submitted", "User input submitted", "info"],
+    ["chat", "Continued in chat", "info"],
+    ["cancelled", "User input cancelled", "info"],
+    ["timed_out", "User input timed out", "error"],
+    ["stale", "User input request expired", "error"],
+    ["aborted", "User input aborted", "error"],
+    ["process_exited", "User input interrupted by provider exit", "error"],
+  ] as const) {
+    it(`labels ${outcome} user input truthfully`, () => {
+      const event = {
+        ...base,
+        type: "user-input.resolved",
+        eventId: EventId.make(`evt-user-input-${outcome}`),
+        turnId: TurnId.make("turn-1"),
+        requestId: RuntimeRequestId.make("request-1"),
+        payload: { outcome },
+      } satisfies ProviderRuntimeEvent;
+
+      expect(runtimeEventToActivities(event)[0]).toMatchObject({
+        summary,
+        tone,
+        payload: { outcome },
+      });
+    });
+  }
+
+  it("does not label an unspecified terminal outcome as submitted", () => {
+    const event = {
+      ...base,
+      type: "user-input.resolved",
+      eventId: EventId.make("evt-user-input-unspecified"),
+      turnId: TurnId.make("turn-1"),
+      requestId: RuntimeRequestId.make("request-1"),
+      payload: {},
+    } satisfies ProviderRuntimeEvent;
+
+    expect(runtimeEventToActivities(event)[0]).toMatchObject({
+      summary: "User input resolved",
+      tone: "info",
+    });
   });
 });

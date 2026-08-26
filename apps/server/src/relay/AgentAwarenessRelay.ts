@@ -78,6 +78,7 @@ export function shouldPublishAgentAwarenessEvent(event: OrchestrationEvent): boo
       return false;
     case "thread.proposed-plan-upserted":
     case "thread.runtime-mode-set":
+    case "thread.interaction-mode-change-requested":
     case "thread.interaction-mode-set":
       return false;
     case "thread.activity-appended":
@@ -87,6 +88,9 @@ export function shouldPublishAgentAwarenessEvent(event: OrchestrationEvent): boo
         event.payload.activity.kind === "provider.approval.respond.failed" ||
         event.payload.activity.kind === "user-input.requested" ||
         event.payload.activity.kind === "user-input.resolved" ||
+        event.payload.activity.kind === "plan.review.requested" ||
+        event.payload.activity.kind === "plan.review.resolved" ||
+        event.payload.activity.kind === "provider.plan-review.respond.failed" ||
         event.payload.activity.kind === "runtime.error"
       );
     default:
@@ -228,6 +232,7 @@ export function describeThreadShellForAwareness(
     latestTurnCompletedAt: shell.latestTurn?.completedAt ?? null,
     hasPendingApprovals: shell.hasPendingApprovals,
     hasPendingUserInput: shell.hasPendingUserInput,
+    hasPendingPlanReview: shell.hasPendingPlanReview === true,
   };
 }
 

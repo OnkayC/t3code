@@ -66,8 +66,37 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
               tone = excluded.tone,
               kind = excluded.kind,
               summary = excluded.summary,
-              payload_json = excluded.payload_json,
-              sequence = excluded.sequence,
+              payload_json = CASE
+                WHEN excluded.kind = 'reasoning.delta'
+                  AND projection_thread_activities.kind = 'reasoning.delta'
+                  AND projection_thread_activities.created_at = excluded.created_at
+                THEN json_set(
+                  excluded.payload_json,
+                  '$.detail',
+                  CASE
+                    WHEN length(
+                      COALESCE(json_extract(projection_thread_activities.payload_json, '$.detail'), '') ||
+                      COALESCE(json_extract(excluded.payload_json, '$.detail'), '')
+                    ) <= 24000
+                    THEN
+                      COALESCE(json_extract(projection_thread_activities.payload_json, '$.detail'), '') ||
+                      COALESCE(json_extract(excluded.payload_json, '$.detail'), '')
+                    ELSE '…' || substr(
+                      COALESCE(json_extract(projection_thread_activities.payload_json, '$.detail'), '') ||
+                      COALESCE(json_extract(excluded.payload_json, '$.detail'), ''),
+                      -23999
+                    )
+                  END
+                )
+                ELSE excluded.payload_json
+              END,
+              sequence = CASE
+                WHEN excluded.kind = 'reasoning.delta'
+                  AND projection_thread_activities.kind = 'reasoning.delta'
+                  AND projection_thread_activities.created_at = excluded.created_at
+                THEN COALESCE(projection_thread_activities.sequence, excluded.sequence)
+                ELSE excluded.sequence
+              END,
               created_at = excluded.created_at
           `,
   });
