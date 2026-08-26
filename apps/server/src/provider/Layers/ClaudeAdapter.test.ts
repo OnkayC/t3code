@@ -4492,7 +4492,10 @@ describe("ClaudeAdapterLive", () => {
       yield* adapter.respondToUserInput(
         session.threadId,
         ApprovalRequestId.make(requested.value.requestId),
-        { [question.id]: "Compact and continue" },
+        {
+          kind: "submit",
+          answers: { [question.id]: { selectedOptions: ["Compact and continue"] } },
+        },
       );
 
       const resolved = yield* Stream.runHead(adapter.streamEvents);
@@ -4864,7 +4867,7 @@ describe("ClaudeAdapterLive", () => {
       );
       const resolvedEvent = runtimeEvents[1];
       if (resolvedEvent?.type === "user-input.resolved") {
-        assert.deepEqual(resolvedEvent.payload.answers, {});
+        assert.deepEqual(resolvedEvent.payload, { outcome: "cancelled" });
       }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -4920,7 +4923,7 @@ describe("ClaudeAdapterLive", () => {
         assert.fail("Expected user-input.resolved event");
         return;
       }
-      assert.deepEqual(resolvedEvent.value.payload.answers, {});
+      assert.deepEqual(resolvedEvent.value.payload, { outcome: "cancelled" });
 
       const permissionResult = yield* Effect.promise(() => permissionPromise);
       assert.deepEqual(permissionResult, {

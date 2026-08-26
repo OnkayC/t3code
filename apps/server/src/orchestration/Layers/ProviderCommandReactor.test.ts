@@ -153,7 +153,6 @@ describe("ProviderCommandReactor", () => {
     readonly titleRegenerationCompletionDispatchFailures?: number;
     readonly titleRegenerationBeforeStart?: "one" | "two";
     readonly interruptTurnEffect?: () => Effect.Effect<void, ProviderAdapterRequestError>;
-    readonly stopSessionEffect?: () => Effect.Effect<void, ProviderAdapterRequestError>;
     readonly startSessionEffect?: (
       session: ProviderSession,
     ) => Effect.Effect<ProviderSession, ProviderAdapterRequestError>;
@@ -251,18 +250,13 @@ describe("ProviderCommandReactor", () => {
     const setInteractionMode = vi.fn<ProviderServiceShape["setInteractionMode"]>(
       input?.setInteractionModeEffect ?? (() => Effect.void),
     );
-    const stopSession = vi.fn((stopInput: unknown) =>
-      (input?.stopSessionEffect?.() ?? Effect.void).pipe(
+    const stopSession = vi.fn<ProviderServiceShape["stopSession"]>((stopInput) =>
+      (input?.stopSessionEffect?.(stopInput) ?? Effect.void).pipe(
         Effect.tap(() =>
           Effect.sync(() => {
-            const threadId =
-              typeof stopInput === "object" && stopInput !== null && "threadId" in stopInput
-                ? (stopInput as { threadId?: ThreadId }).threadId
-                : undefined;
-            if (!threadId) {
-              return;
-            }
-            const index = runtimeSessions.findIndex((session) => session.threadId === threadId);
+            const index = runtimeSessions.findIndex(
+              (session) => session.threadId === stopInput.threadId,
+            );
             if (index >= 0) {
               runtimeSessions.splice(index, 1);
             }

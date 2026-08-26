@@ -12,7 +12,7 @@ import {
   type ProviderRequestKind,
   type ProviderSession,
   type ProviderTurnStartResult,
-  type ProviderUserInputAnswer,
+  ProviderUserInputAnswer,
   RuntimeMode,
   ThreadId,
   TurnId,
@@ -72,7 +72,7 @@ export const CodexResumeCursorSchema = Schema.Struct({
   threadId: Schema.String,
 });
 const isCodexResumeCursorSchema = Schema.is(CodexResumeCursorSchema);
-const isCodexUserInputAnswerObject = Schema.is(CodexUserInputAnswerObject);
+const isCodexUserInputAnswerObject = Schema.is(ProviderUserInputAnswer);
 const NullableMcpElicitationString = Schema.NullOr(Schema.String);
 const McpElicitationMetadata = Schema.Struct({
   app: Schema.optionalKey(NullableMcpElicitationString),

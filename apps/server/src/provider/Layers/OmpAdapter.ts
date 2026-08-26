@@ -436,6 +436,11 @@ function approvalDecision(decision: ProviderApprovalDecision): string {
       return "approve_once";
     case "acceptForSession":
       return "approve_session";
+    case "acceptAlways":
+      throw failValidation(
+        "respondToRequest",
+        "OMP approvals do not support persistent approval beyond the current session.",
+      );
     case "decline":
       return "deny";
     case "cancel":
