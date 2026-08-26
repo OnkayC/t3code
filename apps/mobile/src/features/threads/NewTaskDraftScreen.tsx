@@ -657,9 +657,8 @@ export function NewTaskDraftScreen(props: {
       draft.workspaceSelection?.worktreePath ?? flow.selectedWorktreePath;
     const startFromOrigin = draft.workspaceSelection?.startFromOrigin ?? flow.startFromOrigin;
     const runtimeMode = draft.runtimeMode ?? flow.runtimeMode;
-    const interactionMode = flow.planModeEnabled
-      ? (draft.interactionMode ?? flow.interactionMode)
-      : "default";
+    const interactionMode = draft.interactionMode ?? flow.interactionMode;
+    const workflow = draft.workflow ?? flow.workflow;
     const initialMessageText = draft.text.trim();
 
     if (
@@ -737,6 +736,7 @@ export function NewTaskDraftScreen(props: {
       startFromOrigin,
       runtimeMode,
       interactionMode,
+      ...(workflow !== null ? { workflow } : {}),
       initialMessageText,
       initialAttachments: draft.attachments,
       ...(editingPendingTask

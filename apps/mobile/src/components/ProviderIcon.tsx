@@ -1,5 +1,6 @@
-import { Path, Svg } from "react-native-svg";
+import { Path, Rect, Svg } from "react-native-svg";
 import { useAppearancePreferences } from "../features/settings/appearance/AppearancePreferencesProvider";
+import { SymbolView } from "./AppSymbol";
 
 type ProviderIconProps = {
   readonly provider: string | null | undefined;
@@ -11,6 +12,20 @@ export function ProviderIcon(props: ProviderIconProps) {
   const isDarkMode = themeAppearance === "dark";
   const size = props.size ?? 16;
   const mono = isDarkMode ? "#e5e5e5" : "#171717";
+
+  if (props.provider === "omp") {
+    return (
+      <Svg width={size} height={size} viewBox="0 0 800 800" fill="none">
+        <Rect width="800" height="800" rx="160" fill="#000000" />
+        <Path
+          fill="#ffffff"
+          fillRule="evenodd"
+          d="M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29ZM282.65 282.65V400H400V282.65Z"
+        />
+        <Path fill="#ffffff" d="M517.36 400H634.72V634.72H517.36Z" />
+      </Svg>
+    );
+  }
 
   if (props.provider === "claudeAgent") {
     return (
@@ -59,7 +74,18 @@ export function ProviderIcon(props: ProviderIconProps) {
     );
   }
 
-  // codex (and unknown drivers)
+  if (props.provider !== "codex") {
+    return (
+      <SymbolView
+        name="chevron.left.forwardslash.chevron.right"
+        size={size}
+        tintColor={mono}
+        type="monochrome"
+      />
+    );
+  }
+
+  // Codex
   return (
     <Svg width={size} height={size} viewBox="0 0 256 260" fill="none">
       <Path

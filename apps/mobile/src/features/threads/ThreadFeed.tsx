@@ -174,6 +174,8 @@ export interface ThreadFeedProps {
     readonly loading: boolean;
     readonly onLoadEarlier: () => void;
   } | null;
+  readonly onRevertCheckpoint: (turnCount: number) => void;
+  readonly checkpointRevertDisabled?: boolean;
 }
 
 function MessageAttachmentImage(props: {
@@ -986,6 +988,8 @@ function renderFeedEntry(
     readonly onPressImage: (uri: string, headers?: Record<string, string>) => void;
     readonly onMarkdownLinkPress: (href: string) => void;
     readonly renderMarkdownImage: MarkdownImageRenderer;
+    readonly onRevertCheckpoint: (turnCount: number) => void;
+    readonly checkpointRevertDisabled: boolean;
     readonly iconSubtleColor: string | import("react-native").ColorValue;
     readonly userBubbleColor: string | import("react-native").ColorValue;
     readonly markdownStyles: MarkdownStyleSets;
@@ -1100,6 +1104,23 @@ function renderFeedEntry(
             })}
           </View>
           <View className="mt-1 flex-row items-center justify-end gap-1 pr-0.5">
+            {entry.checkpointTurnCount !== undefined ? (
+              <Pressable
+                accessibilityLabel="Revert to this message"
+                accessibilityRole="button"
+                disabled={props.checkpointRevertDisabled}
+                hitSlop={6}
+                className="size-7 items-center justify-center"
+                onPress={() => props.onRevertCheckpoint(entry.checkpointTurnCount!)}
+              >
+                <SymbolView
+                  name="arrow.uturn.backward"
+                  size={13}
+                  tintColor={iconSubtleColor}
+                  type="monochrome"
+                />
+              </Pressable>
+            ) : null}
             <Text className="font-t3-medium text-xs tabular-nums text-neutral-600 dark:text-neutral-400">
               {timestampLabel}
             </Text>
@@ -2023,6 +2044,8 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         onToggleWorkRow,
         onToggleTurnFold,
         onPressImage,
+        onRevertCheckpoint: props.onRevertCheckpoint,
+        checkpointRevertDisabled: props.checkpointRevertDisabled ?? false,
         onMarkdownLinkPress,
         renderMarkdownImage,
         iconSubtleColor,
@@ -2047,6 +2070,8 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       onCopyWorkRow,
       onMarkdownLinkPress,
       onPressImage,
+      props.checkpointRevertDisabled,
+      props.onRevertCheckpoint,
       onToggleTurnFold,
       onToggleWorkGroup,
       onToggleWorkRow,

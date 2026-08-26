@@ -1,7 +1,9 @@
 import type {
   ModelSelection,
+  ProviderInteractionMode,
   ProviderOptionDescriptor,
   ProviderOptionSelection,
+  ProviderPlanWorkflow,
   RuntimeMode,
 } from "@t3tools/contracts";
 import type { LegendListRenderItemProps } from "@legendapp/list/react-native";
@@ -53,7 +55,12 @@ import {
   NATIVE_MAIL_SEARCH_TOOLBAR_CONTENT_INSET,
   NATIVE_MAIL_SEARCH_TOOLBAR_SUPPORTED,
 } from "../layout/native-mail-search-toolbar";
-import { RUNTIME_MODE_CHOICES, selectableChoices } from "./thread-settings-options";
+import {
+  INTERACTION_MODE_CHOICES,
+  PLAN_WORKFLOW_CHOICES,
+  RUNTIME_MODE_CHOICES,
+  selectableChoices,
+} from "./thread-settings-options";
 import {
   modelMatchesCatalogQuery,
   pendingModelAfterPress,
@@ -77,6 +84,8 @@ const THREAD_SETTINGS_MAINTAIN_VISIBLE_CONTENT_POSITION = {
 const THREAD_SETTINGS_CATALOG_LAYOUT_TRANSITION = LinearTransition.duration(180);
 const THREAD_SETTINGS_CATALOG_ENTER_TRANSITION = FadeIn.duration(140);
 const THREAD_SETTINGS_CATALOG_EXIT_TRANSITION = FadeOut.duration(120);
+const ALL_RUNTIME_MODES = RUNTIME_MODE_CHOICES.map((choice) => choice.mode);
+const DEFAULT_SUPPORTED_INTERACTION_MODES = ["default"] as const;
 const THREAD_SETTINGS_OPTIONS_LAYOUT_TRANSITION = LinearTransition.duration(180);
 const THREAD_SETTINGS_OPTION_ENTER_TRANSITION = FadeIn.duration(140);
 const THREAD_SETTINGS_OPTION_EXIT_TRANSITION = FadeOut.duration(100);
@@ -278,6 +287,8 @@ function SwitchRow(props: {
 
 type ThreadSettingsSubmenuPage =
   | { readonly kind: "descriptor"; readonly id: string }
+  | { readonly kind: "interaction" }
+  | { readonly kind: "workflow" }
   | { readonly kind: "runtime" };
 
 type ThreadSettingsSessionProps = {
@@ -286,7 +297,17 @@ type ThreadSettingsSessionProps = {
   readonly onSelectModel: (option: ModelOption) => void;
   readonly optionDescriptors: ReadonlyArray<ProviderOptionDescriptor>;
   readonly onUpdateOptionSelections: (selections: ReadonlyArray<ProviderOptionSelection>) => void;
+  readonly interactionMode: ProviderInteractionMode;
+  readonly workflow: ProviderPlanWorkflow | null;
+  readonly supportedInteractionModes?: ReadonlyArray<ProviderInteractionMode>;
+  readonly supportedPlanWorkflows?: ReadonlyArray<ProviderPlanWorkflow>;
+  readonly defaultPlanWorkflow?: ProviderPlanWorkflow;
+  readonly onUpdateInteractionMode: (
+    mode: ProviderInteractionMode,
+    workflow?: ProviderPlanWorkflow,
+  ) => void;
   readonly runtimeMode: RuntimeMode;
+  readonly supportedRuntimeModes?: ReadonlyArray<RuntimeMode>;
   readonly onUpdateRuntimeMode: (mode: RuntimeMode) => void;
 };
 
@@ -333,7 +354,17 @@ export function useExistingThreadSettingsRoutePresentation() {
 
 type ThreadSettingsSessionValue = {
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
+  readonly interactionMode: ProviderInteractionMode;
+  readonly workflow: ProviderPlanWorkflow | null;
+  readonly supportedInteractionModes: ReadonlyArray<ProviderInteractionMode>;
+  readonly supportedPlanWorkflows: ReadonlyArray<ProviderPlanWorkflow>;
+  readonly defaultPlanWorkflow: ProviderPlanWorkflow | undefined;
+  readonly onUpdateInteractionMode: (
+    mode: ProviderInteractionMode,
+    workflow?: ProviderPlanWorkflow,
+  ) => void;
   readonly runtimeMode: RuntimeMode;
+  readonly supportedRuntimeModes: ReadonlyArray<RuntimeMode>;
   readonly onUpdateRuntimeMode: (mode: RuntimeMode) => void;
   readonly displayedDescriptors: ReadonlyArray<ProviderOptionDescriptor>;
   readonly providerExpansionOverrides: ReadonlySet<string>;
@@ -451,7 +482,20 @@ function ThreadSettingsSessionProvider(
   const value = useMemo<ThreadSettingsSessionValue>(
     () => ({
       providerGroups: props.providerGroups,
+      interactionMode: props.interactionMode,
+      workflow: props.workflow,
+      supportedInteractionModes:
+        props.supportedInteractionModes && props.supportedInteractionModes.length > 0
+          ? props.supportedInteractionModes
+          : DEFAULT_SUPPORTED_INTERACTION_MODES,
+      supportedPlanWorkflows: props.supportedPlanWorkflows ?? [],
+      defaultPlanWorkflow: props.defaultPlanWorkflow,
+      onUpdateInteractionMode: props.onUpdateInteractionMode,
       runtimeMode: props.runtimeMode,
+      supportedRuntimeModes:
+        props.supportedRuntimeModes && props.supportedRuntimeModes.length > 0
+          ? props.supportedRuntimeModes
+          : ALL_RUNTIME_MODES,
       onUpdateRuntimeMode: props.onUpdateRuntimeMode,
       displayedDescriptors,
       providerExpansionOverrides,
@@ -481,9 +525,16 @@ function ThreadSettingsSessionProvider(
       pendingModel,
       pressModel,
       providerFilter,
+      props.defaultPlanWorkflow,
+      props.interactionMode,
+      props.onUpdateInteractionMode,
       props.onUpdateRuntimeMode,
       props.providerGroups,
       props.runtimeMode,
+      props.supportedInteractionModes,
+      props.supportedPlanWorkflows,
+      props.supportedRuntimeModes,
+      props.workflow,
       searchQuery,
       showLegacyToggle,
       toggleProvider,
@@ -703,6 +754,31 @@ function ThreadSettingsOptionsItem(props: {
             </Animated.View>
           );
         })}
+        {session.supportedInteractionModes.length > 1 ? (
+          <Animated.View layout={THREAD_SETTINGS_OPTIONS_LAYOUT_TRANSITION}>
+            <DisclosureRow
+              label="Interaction"
+              value={
+                INTERACTION_MODE_CHOICES.find((choice) => choice.mode === session.interactionMode)
+                  ?.label
+              }
+              onPress={() => props.onOpenSubmenu({ kind: "interaction" })}
+            />
+          </Animated.View>
+        ) : null}
+        {session.interactionMode === "plan" && session.supportedPlanWorkflows.length > 0 ? (
+          <Animated.View layout={THREAD_SETTINGS_OPTIONS_LAYOUT_TRANSITION}>
+            <DisclosureRow
+              label="Plan workflow"
+              value={
+                PLAN_WORKFLOW_CHOICES.find(
+                  (choice) => choice.workflow === (session.workflow ?? session.defaultPlanWorkflow),
+                )?.label
+              }
+              onPress={() => props.onOpenSubmenu({ kind: "workflow" })}
+            />
+          </Animated.View>
+        ) : null}
         <Animated.View layout={THREAD_SETTINGS_OPTIONS_LAYOUT_TRANSITION}>
           <DisclosureRow
             isLast
@@ -858,7 +934,9 @@ function ThreadSettingsChoiceContent(props: {
   const submenuContent =
     props.submenu.kind === "runtime"
       ? {
-          rows: RUNTIME_MODE_CHOICES.map((choice) => ({
+          rows: RUNTIME_MODE_CHOICES.filter((choice) =>
+            session.supportedRuntimeModes.includes(choice.mode),
+          ).map((choice) => ({
             id: choice.mode,
             label: choice.label,
             description: choice.description,
@@ -870,21 +948,53 @@ function ThreadSettingsChoiceContent(props: {
             },
           })),
         }
-      : activeDescriptor?.type === "select"
+      : props.submenu.kind === "interaction"
         ? {
-            rows: selectableChoices(activeDescriptor).map((choice) => ({
-              id: choice.id,
+            rows: INTERACTION_MODE_CHOICES.filter((choice) =>
+              session.supportedInteractionModes.includes(choice.mode),
+            ).map((choice) => ({
+              id: choice.mode,
               label: choice.label,
-              description: undefined,
-              selected: choice.id === getProviderOptionCurrentValue(activeDescriptor),
+              description: choice.description,
+              selected: choice.mode === session.interactionMode,
               onPress: () => {
                 void Haptics.selectionAsync();
-                session.applyOptionChange(activeDescriptor.id, choice.id);
+                session.onUpdateInteractionMode(choice.mode);
                 props.onSelected();
               },
             })),
           }
-        : null;
+        : props.submenu.kind === "workflow"
+          ? {
+              rows: PLAN_WORKFLOW_CHOICES.filter((choice) =>
+                session.supportedPlanWorkflows.includes(choice.workflow),
+              ).map((choice) => ({
+                id: choice.workflow,
+                label: choice.label,
+                description: choice.description,
+                selected: choice.workflow === (session.workflow ?? session.defaultPlanWorkflow),
+                onPress: () => {
+                  void Haptics.selectionAsync();
+                  session.onUpdateInteractionMode("plan", choice.workflow);
+                  props.onSelected();
+                },
+              })),
+            }
+          : activeDescriptor?.type === "select"
+            ? {
+                rows: selectableChoices(activeDescriptor).map((choice) => ({
+                  id: choice.id,
+                  label: choice.label,
+                  description: undefined,
+                  selected: choice.id === getProviderOptionCurrentValue(activeDescriptor),
+                  onPress: () => {
+                    void Haptics.selectionAsync();
+                    session.applyOptionChange(activeDescriptor.id, choice.id);
+                    props.onSelected();
+                  },
+                })),
+              }
+            : null;
 
   if (!submenuContent) {
     return <View className="flex-1 bg-sheet" />;
@@ -1044,9 +1154,13 @@ function ThreadSettingsModelsScreen() {
           const title =
             submenu.kind === "runtime"
               ? "Runtime"
-              : (session.displayedDescriptors.find(
-                  (descriptor) => descriptor.type === "select" && descriptor.id === submenu.id,
-                )?.label ?? "Option");
+              : submenu.kind === "interaction"
+                ? "Interaction"
+                : submenu.kind === "workflow"
+                  ? "Plan workflow"
+                  : (session.displayedDescriptors.find(
+                      (descriptor) => descriptor.type === "select" && descriptor.id === submenu.id,
+                    )?.label ?? "Option");
           navigation.navigate("ThreadSettingsChoice", { ...submenu, title });
         }}
       />
@@ -1222,7 +1336,14 @@ export function NewTaskThreadSettingsRouteScreen() {
       onSelectModel={(option) => flow.setSelectedModelKey(option.key, option.selection.options)}
       optionDescriptors={optionDescriptors}
       onUpdateOptionSelections={flow.setSelectedModelOptions}
+      interactionMode={flow.interactionMode}
+      workflow={flow.workflow}
+      supportedInteractionModes={flow.supportedInteractionModes}
+      supportedPlanWorkflows={flow.supportedPlanWorkflows}
+      defaultPlanWorkflow={flow.defaultPlanWorkflow}
+      onUpdateInteractionMode={flow.setInteractionMode}
       runtimeMode={flow.runtimeMode}
+      supportedRuntimeModes={flow.supportedRuntimeModes}
       onUpdateRuntimeMode={flow.setRuntimeMode}
     >
       <ThreadSettingsPickerNavigator onClose={() => navigation.goBack()} />

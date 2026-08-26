@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { codexFeedbackMessage } from "@t3tools/client-runtime/state/threads";
 
 import {
+  CheckpointRef,
   EventId,
   MessageId,
   ProjectId,
@@ -16,6 +17,8 @@ import {
   buildPendingUserInputAnswers,
   buildThreadFeed,
   derivePendingApprovals,
+  derivePendingPlanReview,
+  derivePendingUserInputs,
   deriveThreadFeedPresentation,
   isPendingUserInputOptionSelected,
   setPendingUserInputCustomAnswer,
@@ -116,8 +119,8 @@ describe("pending user input answers", () => {
         scope: { selectedOptionLabels: ["Orders", "Listings"] },
       }),
     ).toEqual({
-      runtime: "Go",
-      scope: ["Orders", "Listings"],
+      runtime: { selectedOptions: ["Go"] },
+      scope: { selectedOptions: ["Orders", "Listings"] },
     });
   });
 
@@ -161,6 +164,7 @@ describe("pending approvals", () => {
         detail: "Allow ChatGPT to use Safari?",
         appName: "Safari",
         options,
+        allowedDecisions: ["accept", "acceptAlways", "cancel"],
       },
     });
 
@@ -172,6 +176,7 @@ describe("pending approvals", () => {
         detail: "Allow ChatGPT to use Safari?",
         appName: "Safari",
         options,
+        allowedDecisions: ["accept", "acceptAlways", "cancel"],
       },
     ]);
   });
@@ -324,6 +329,54 @@ describe("buildThreadFeed", () => {
     ]);
   });
 
+  it("attaches checkpoint revert targets to user messages", () => {
+    const turnId = TurnId.make("turn-checkpoint");
+    const userMessageId = MessageId.make("user-checkpoint");
+    const assistantMessageId = MessageId.make("assistant-checkpoint");
+    const thread = makeThread({
+      id: ThreadId.make("thread-checkpoint"),
+      projectId: ProjectId.make("project-1"),
+      title: "Checkpoint thread",
+      messages: [
+        {
+          id: userMessageId,
+          role: "user",
+          text: "Try the change.",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-04-01T00:00:00.000Z",
+          updatedAt: "2026-04-01T00:00:00.000Z",
+        },
+        {
+          id: assistantMessageId,
+          role: "assistant",
+          text: "Done.",
+          turnId,
+          streaming: false,
+          createdAt: "2026-04-01T00:00:01.000Z",
+          updatedAt: "2026-04-01T00:00:01.000Z",
+        },
+      ],
+      checkpoints: [
+        {
+          turnId,
+          checkpointTurnCount: 3,
+          checkpointRef: CheckpointRef.make("checkpoint-3"),
+          status: "ready",
+          files: [],
+          assistantMessageId,
+          completedAt: "2026-04-01T00:00:02.000Z",
+        },
+      ],
+    });
+
+    expect(buildThreadFeed(thread)[0]).toMatchObject({
+      type: "message",
+      id: userMessageId,
+      checkpointTurnCount: 2,
+    });
+  });
+
   it("collapses matching tool lifecycle rows like desktop", () => {
     const thread = makeThread({
       id: ThreadId.make("thread-2"),
@@ -393,6 +446,58 @@ describe("buildThreadFeed", () => {
     expect(group.activities[0]?.getCopyText()).toBe(
       "Run tests\nbun run test\n/bin/zsh -lc 'bun run test'",
     );
+  });
+
+  it("consumes canonical command and file inputs without provider-specific parsing", () => {
+    const turnId = TurnId.make("turn-canonical-tools");
+    const thread = makeThread({
+      id: ThreadId.make("thread-canonical-tools"),
+      projectId: ProjectId.make("project-1"),
+      title: "Canonical tools",
+      latestTurn: {
+        turnId,
+        state: "completed",
+        requestedAt: "2026-04-01T00:00:00.000Z",
+        startedAt: "2026-04-01T00:00:01.000Z",
+        completedAt: "2026-04-01T00:00:04.000Z",
+        assistantMessageId: null,
+      },
+      activities: [
+        makeActivity({
+          id: EventId.make("canonical-command-tool"),
+          kind: "tool.completed",
+          tone: "tool",
+          summary: "bash",
+          createdAt: "2026-04-01T00:00:02.000Z",
+          turnId,
+          payload: {
+            itemType: "command_execution",
+            data: { item: { input: { command: ["bun", "run", "lint"] } } },
+          },
+        }),
+        makeActivity({
+          id: EventId.make("canonical-file-tool"),
+          kind: "tool.completed",
+          tone: "tool",
+          summary: "edit",
+          createdAt: "2026-04-01T00:00:03.000Z",
+          turnId,
+          payload: {
+            itemType: "file_change",
+            data: { item: { input: { path: "apps/mobile/src/App.tsx" } } },
+          },
+        }),
+      ],
+    });
+
+    const group = buildThreadFeed(thread)[0];
+    if (!group || group.type !== "activity-group") throw new Error("expected activity group");
+    expect(
+      group.activities.find((activity) => activity.id === "canonical-command-tool"),
+    ).toMatchObject({ summary: "Bash", detail: "bun run lint", icon: "command" });
+    expect(
+      group.activities.find((activity) => activity.id === "canonical-file-tool"),
+    ).toMatchObject({ detail: "apps/mobile/src/App.tsx", icon: "edit" });
   });
 
   it("keeps MCP inputs available to expanded mobile work rows", () => {
@@ -809,13 +914,12 @@ describe("buildThreadFeed", () => {
 });
 
 describe("quiet timeline: nested agents", () => {
-  it("keeps a nested agent's terminal row but hides its background work", () => {
+  it("moves agent-owned terminal and background work into the Agents sheet", () => {
     const thread = makeThread({
       id: ThreadId.make("thread-nested"),
       projectId: ProjectId.make("project-1"),
       title: "Nested agents",
       activities: [
-        // A subagent's own shell: internal, covered by the owner's liveness.
         makeActivity({
           id: EventId.make("shell-done"),
           kind: "task.completed",
@@ -823,8 +927,6 @@ describe("quiet timeline: nested agents", () => {
           createdAt: "2026-04-01T00:00:02.000Z",
           payload: { taskId: "sh-1", agentId: "owner", agentKind: "background" },
         }),
-        // A nested AGENT's completion: mobile has no Agents sheet, so this
-        // terminal row is the only signal it ever finished.
         makeActivity({
           id: EventId.make("nested-done"),
           kind: "task.completed",
@@ -839,7 +941,93 @@ describe("quiet timeline: nested agents", () => {
     const ids = feed.flatMap((entry) =>
       entry.type === "activity-group" ? entry.activities.map((row) => row.id) : [],
     );
-    expect(ids).toContain("nested-done");
+    expect(ids).not.toContain("nested-done");
     expect(ids).not.toContain("shell-done");
+  });
+});
+
+describe("canonical provider interactions", () => {
+  it("preserves rich ask metadata and builds structured multi-select answers", () => {
+    const request = makeActivity({
+      id: EventId.make("ask-open"),
+      kind: "user-input.requested",
+      summary: "Input requested",
+      createdAt: "2026-04-01T00:00:00.000Z",
+      payload: {
+        requestId: "ask-1",
+        allowedActions: ["submit", "chat", "cancel"],
+        timeout: 30_000,
+        supportsNote: true,
+        questions: [
+          {
+            id: "targets",
+            question: "Which surfaces?",
+            options: [
+              { label: "Web", preview: "apps/web" },
+              { label: "Mobile", description: "React Native" },
+            ],
+            multiSelect: true,
+            recommended: 1,
+            allowCustom: true,
+          },
+        ],
+      },
+    });
+    const pending = derivePendingUserInputs([request])[0]!;
+    expect(pending.allowedActions).toEqual(["submit", "chat", "cancel"]);
+    expect(pending.supportsNote).toBe(true);
+    expect(pending.questions[0]?.options[0]?.preview).toBe("apps/web");
+    expect(
+      buildPendingUserInputAnswers(pending.questions, {
+        targets: { selectedOptionLabels: ["Web", "Mobile"], note: "Keep parity" },
+      }),
+    ).toEqual({
+      targets: { selectedOptions: ["Web", "Mobile"], note: "Keep parity" },
+    });
+
+    const nonOmpRequest = makeActivity({
+      id: EventId.make("ask-open-non-omp"),
+      kind: "user-input.requested",
+      summary: "Input requested",
+      createdAt: "2026-04-01T00:00:01.000Z",
+      payload: {
+        requestId: "ask-2",
+        questions: [
+          {
+            id: "target",
+            question: "Which surface?",
+            options: [{ label: "Web" }],
+          },
+        ],
+      },
+    });
+    expect(derivePendingUserInputs([nonOmpRequest])[0]?.supportsNote).toBeUndefined();
+  });
+
+  it("keeps the canonical same-thread plan review until resolved", () => {
+    const requested = makeActivity({
+      id: EventId.make("plan-review-open"),
+      kind: "plan.review.requested",
+      summary: "Plan review requested",
+      createdAt: "2026-04-01T00:00:00.000Z",
+      payload: {
+        requestId: "review-1",
+        title: "Native plan",
+        planArtifactId: "artifact-1",
+        planArtifactUrl: "local://plans/artifact-1",
+        planMarkdown: "# Native plan",
+        allowedContextStrategies: ["fresh", "preserve", "compact"],
+        executionModels: [{ provider: "openai", modelId: "gpt-5" }],
+      },
+    });
+    expect(derivePendingPlanReview([requested])?.requestId).toBe("review-1");
+    const resolved = makeActivity({
+      id: EventId.make("plan-review-resolved"),
+      kind: "plan.review.resolved",
+      summary: "Plan review resolved",
+      createdAt: "2026-04-01T00:00:01.000Z",
+      payload: { requestId: "review-1", outcome: "cancelled" },
+    });
+    expect(derivePendingPlanReview([requested, resolved])).toBeNull();
   });
 });

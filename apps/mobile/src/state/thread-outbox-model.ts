@@ -1,4 +1,5 @@
 import { isTransportConnectionErrorMessage } from "@t3tools/client-runtime/errors";
+import { resolveProviderTurnDeliveryMode } from "@t3tools/client-runtime/state/providerInteractionRuntime";
 import type { EnvironmentShellStatus } from "@t3tools/client-runtime/state/shell";
 import {
   CommandId,
@@ -8,11 +9,15 @@ import {
   ModelSelection,
   ProjectId,
   ProviderInteractionMode,
+  ProviderPlanWorkflow,
   RuntimeMode,
   ThreadId,
   type ModelSelection as ModelSelectionType,
   type ProjectId as ProjectIdType,
   type ProviderInteractionMode as ProviderInteractionModeType,
+  type ProviderPlanWorkflow as ProviderPlanWorkflowType,
+  type ProviderTurnDeliveryMode,
+  type ServerProvider,
   type RuntimeMode as RuntimeModeType,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
@@ -21,7 +26,7 @@ import { DraftComposerImageAttachmentSchema } from "../lib/composer-image-schema
 import type { DraftComposerImageAttachment } from "../lib/composerImages";
 import { scopedThreadKey } from "../lib/scopedEntities";
 
-const THREAD_OUTBOX_SCHEMA_VERSION = 3;
+const THREAD_OUTBOX_SCHEMA_VERSION = 4;
 const THREAD_OUTBOX_MAX_RETRY_DELAY_MS = 16_000;
 
 const QueuedThreadCreationSchema = Schema.Struct({
@@ -37,7 +42,7 @@ const QueuedThreadCreationSchema = Schema.Struct({
 });
 
 export const QueuedThreadMessageSchema = Schema.Struct({
-  schemaVersion: Schema.Literals([1, 2, THREAD_OUTBOX_SCHEMA_VERSION]),
+  schemaVersion: Schema.Literals([1, 2, 3, THREAD_OUTBOX_SCHEMA_VERSION]),
   environmentId: EnvironmentId,
   threadId: ThreadId,
   messageId: MessageId,
@@ -47,6 +52,7 @@ export const QueuedThreadMessageSchema = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   runtimeMode: Schema.optional(RuntimeMode),
   interactionMode: Schema.optional(ProviderInteractionMode),
+  workflow: Schema.optional(ProviderPlanWorkflow),
   // Present when the queued item creates a brand-new thread (pending task)
   // instead of appending a turn to an existing one.
   creation: Schema.optional(QueuedThreadCreationSchema),
@@ -76,6 +82,7 @@ export interface QueuedThreadMessage {
   readonly modelSelection?: ModelSelectionType;
   readonly runtimeMode?: RuntimeModeType;
   readonly interactionMode?: ProviderInteractionModeType;
+  readonly workflow?: ProviderPlanWorkflowType;
   readonly creation?: QueuedThreadCreation;
   readonly createdAt: string;
 }
@@ -86,14 +93,19 @@ export interface ThreadSettingsSnapshot {
   readonly interactionMode: ProviderInteractionModeType;
 }
 
+export interface ResolvedQueuedThreadSettings extends ThreadSettingsSnapshot {
+  readonly workflow?: ProviderPlanWorkflowType;
+}
+
 export function resolveQueuedThreadSettings(
   message: QueuedThreadMessage,
   thread: ThreadSettingsSnapshot,
-): ThreadSettingsSnapshot {
+): ResolvedQueuedThreadSettings {
   return {
     modelSelection: message.modelSelection ?? thread.modelSelection,
     runtimeMode: message.runtimeMode ?? thread.runtimeMode,
     interactionMode: message.interactionMode ?? thread.interactionMode,
+    ...(message.workflow !== undefined ? { workflow: message.workflow } : {}),
   };
 }
 
@@ -154,6 +166,7 @@ export function resolveThreadOutboxDeliveryAction(input: {
   readonly shellStatus: EnvironmentShellStatus;
   readonly environmentConnected: boolean;
   readonly threadBusy: boolean;
+  readonly canSendFollowUp?: boolean;
 }): ThreadOutboxDeliveryAction {
   if (input.isCreation) {
     // A pending task creates its thread on delivery. If the thread already
@@ -169,7 +182,42 @@ export function resolveThreadOutboxDeliveryAction(input: {
   if (!input.threadExists) {
     return input.shellStatus === "live" ? "remove" : "wait";
   }
-  return input.environmentConnected ? "send" : "wait";
+  return input.environmentConnected && (!input.threadBusy || input.canSendFollowUp === true)
+    ? "send"
+    : "wait";
+}
+
+export function resolveThreadOutboxDeliveryDecision(input: {
+  readonly isCreation: boolean;
+  readonly threadExists: boolean;
+  readonly shellStatus: EnvironmentShellStatus;
+  readonly environmentConnected: boolean;
+  readonly threadBusy: boolean;
+  readonly provider: Pick<ServerProvider, "supportedTurnDeliveryModes"> | null | undefined;
+  /** True when draining would first replace the live session (e.g. runtime-mode change). */
+  readonly wouldReplaceActiveSession?: boolean;
+}): {
+  readonly action: ThreadOutboxDeliveryAction;
+  readonly deliveryMode: ProviderTurnDeliveryMode | undefined;
+} {
+  const deliveryMode =
+    input.wouldReplaceActiveSession === true
+      ? undefined
+      : resolveProviderTurnDeliveryMode({
+          intent: !input.isCreation && input.threadBusy ? "queue" : "send",
+          provider: input.provider,
+        });
+  return {
+    action: resolveThreadOutboxDeliveryAction({
+      isCreation: input.isCreation,
+      threadExists: input.threadExists,
+      shellStatus: input.shellStatus,
+      environmentConnected: input.environmentConnected,
+      threadBusy: input.threadBusy,
+      canSendFollowUp: deliveryMode === "follow-up",
+    }),
+    deliveryMode,
+  };
 }
 
 /**

@@ -23,8 +23,27 @@ const DEFAULT_APPROVAL_OPTIONS = [
   { decision: "decline", label: "Decline" },
 ] satisfies ReadonlyArray<ProviderApprovalOption>;
 
+const EXTENDED_APPROVAL_OPTIONS = [
+  ...DEFAULT_APPROVAL_OPTIONS.slice(0, 2),
+  { decision: "acceptAlways", label: "Always allow" },
+  DEFAULT_APPROVAL_OPTIONS[2],
+  { decision: "cancel", label: "Cancel turn" },
+] satisfies ReadonlyArray<ProviderApprovalOption>;
+
 export function PendingApprovalCard(props: PendingApprovalCardProps) {
-  const options = props.approval.options ?? DEFAULT_APPROVAL_OPTIONS;
+  const allowed =
+    props.approval.allowedDecisions ??
+    props.approval.options?.map((option) => option.decision) ??
+    DEFAULT_APPROVAL_OPTIONS.map((option) => option.decision);
+  const fallbackOptions = props.approval.allowedDecisions
+    ? EXTENDED_APPROVAL_OPTIONS
+    : DEFAULT_APPROVAL_OPTIONS;
+  const options = (props.approval.options ?? fallbackOptions).filter((option) =>
+    allowed.includes(option.decision),
+  );
+  const argumentsText =
+    props.approval.args === undefined ? null : JSON.stringify(props.approval.args, null, 2);
+  const title = props.approval.appName ?? props.approval.toolName ?? props.approval.requestKind;
   // Opaque for the same reason as PendingUserInputCard: nothing blurs the feed
   // behind this card, so a translucent surface bleeds messages through it.
   return (
@@ -32,13 +51,53 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
       <Text className="font-t3-bold text-2xs uppercase tracking-[1.1px] text-sky-700 dark:text-sky-300">
         Approval needed
       </Text>
-      <Text className="font-t3-bold text-lg text-neutral-950 dark:text-neutral-50">
-        {props.approval.appName ?? props.approval.requestKind}
-      </Text>
+      <View className="flex-row flex-wrap items-center gap-2">
+        <Text className="font-t3-bold text-lg text-neutral-950 dark:text-neutral-50">{title}</Text>
+        {props.approval.tier ? (
+          <Text className="rounded-lg bg-neutral-200 px-2 py-1 font-t3-bold text-2xs uppercase text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+            {props.approval.tier}
+          </Text>
+        ) : null}
+        {props.approval.approvalMode ? (
+          <Text className="rounded-lg bg-neutral-200 px-2 py-1 font-t3-bold text-2xs uppercase text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+            {props.approval.approvalMode}
+          </Text>
+        ) : null}
+      </View>
+      {props.approval.reason ? (
+        <Text className="font-sans text-sm leading-normal text-neutral-600 dark:text-neutral-400">
+          {props.approval.reason}
+        </Text>
+      ) : null}
+      {argumentsText ? (
+        <View className="rounded-2xl border border-neutral-200 bg-white p-3 dark:border-white/8 dark:bg-neutral-950/70">
+          <Text className="font-t3-bold text-2xs uppercase text-neutral-500">Arguments</Text>
+          <Text className="mt-1 font-mono text-xs leading-normal text-neutral-800 dark:text-neutral-200">
+            {argumentsText}
+          </Text>
+        </View>
+      ) : null}
       {props.approval.detail ? (
         <Text className="font-sans text-sm leading-normal text-neutral-600 dark:text-neutral-400">
           {props.approval.detail}
         </Text>
+      ) : null}
+      {props.approval.details?.map((detail) => (
+        <Text key={detail} className="font-sans text-xs text-neutral-600 dark:text-neutral-400">
+          • {detail}
+        </Text>
+      ))}
+      {props.approval.providerSafetyChecks?.length ? (
+        <View className="rounded-2xl border border-amber-300/50 bg-amber-50 p-3 dark:border-amber-400/20 dark:bg-amber-400/10">
+          <Text className="font-t3-bold text-xs text-amber-800 dark:text-amber-200">
+            Provider safety checks
+          </Text>
+          {props.approval.providerSafetyChecks.map((check) => (
+            <Text key={check} className="mt-1 font-sans text-xs text-amber-800 dark:text-amber-200">
+              • {check}
+            </Text>
+          ))}
+        </View>
       ) : null}
       <View className="flex-row flex-wrap gap-2.5">
         {options.map((option) => (

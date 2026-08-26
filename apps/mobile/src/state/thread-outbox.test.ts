@@ -16,6 +16,7 @@ import {
   isQueuedThreadCreationSendable,
   modelSelectionsEqual,
   resolveThreadOutboxDeliveryAction,
+  resolveThreadOutboxDeliveryDecision,
   resolveThreadOutboxFailureAction,
   resolveQueuedThreadSettings,
   shouldRetryThreadOutboxDelivery,
@@ -92,13 +93,14 @@ describe("thread outbox", () => {
       },
       runtimeMode: "approval-required",
       interactionMode: "plan",
+      workflow: "parallel",
     } satisfies QueuedThreadMessage;
 
     expect(decodeQueuedThreadMessage(encodeQueuedThreadMessage(selectedMessage))).toEqual(
       selectedMessage,
     );
     expect(
-      resolveQueuedThreadSettings(legacyMessage, {
+      resolveQueuedThreadSettings(selectedMessage, {
         modelSelection: selectedMessage.modelSelection,
         runtimeMode: selectedMessage.runtimeMode,
         interactionMode: selectedMessage.interactionMode,
@@ -107,6 +109,7 @@ describe("thread outbox", () => {
       modelSelection: selectedMessage.modelSelection,
       runtimeMode: selectedMessage.runtimeMode,
       interactionMode: selectedMessage.interactionMode,
+      workflow: selectedMessage.workflow,
     });
   });
 
@@ -487,25 +490,47 @@ describe("thread outbox", () => {
     ).toBe("send");
   });
 
-  it("sends existing-thread messages whenever connected so queued messages can steer", () => {
+  it("sends a supported native follow-up while the thread is busy", () => {
+    const common = {
+      isCreation: false,
+      threadExists: true,
+      shellStatus: "live",
+      environmentConnected: true,
+      threadBusy: true,
+    } as const;
+
     expect(
-      resolveThreadOutboxDeliveryAction({
+      resolveThreadOutboxDeliveryDecision({
+        ...common,
+        provider: { supportedTurnDeliveryModes: ["steer", "follow-up"] },
+      }),
+    ).toEqual({ action: "send", deliveryMode: "follow-up" });
+    expect(
+      resolveThreadOutboxDeliveryDecision({
+        ...common,
+        provider: { supportedTurnDeliveryModes: ["steer"] },
+      }),
+    ).toEqual({
+      action: "wait",
+      deliveryMode: undefined,
+    });
+  });
+
+  it("waits instead of follow-up when a runtime-mode change would replace the active session", () => {
+    expect(
+      resolveThreadOutboxDeliveryDecision({
         isCreation: false,
         threadExists: true,
         shellStatus: "live",
         environmentConnected: true,
         threadBusy: true,
+        provider: { supportedTurnDeliveryModes: ["steer", "follow-up"] },
+        wouldReplaceActiveSession: true,
       }),
-    ).toBe("send");
-    expect(
-      resolveThreadOutboxDeliveryAction({
-        isCreation: false,
-        threadExists: true,
-        shellStatus: "live",
-        environmentConnected: false,
-        threadBusy: true,
-      }),
-    ).toBe("wait");
+    ).toEqual({
+      action: "wait",
+      deliveryMode: undefined,
+    });
   });
 
   it("sends queued creations once connected and live, removing already-created ones", () => {
@@ -567,6 +592,7 @@ describe("thread outbox", () => {
         worktreePath: null,
         startFromOrigin: true,
       },
+      workflow: "iterative",
     } satisfies QueuedThreadMessage;
 
     expect(decodeQueuedThreadMessage(encodeQueuedThreadMessage(creationMessage))).toEqual(
