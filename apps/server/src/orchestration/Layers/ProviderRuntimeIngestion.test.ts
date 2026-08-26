@@ -1375,6 +1375,29 @@ describe("ProviderRuntimeIngestion", () => {
       }),
     );
 
+    harness.emit({
+      type: "turn.queued",
+      eventId: asEventId("evt-plan-target-queued"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: targetThreadId,
+      turnId: targetTurnId,
+      payload: {
+        deliveryMode: "follow-up",
+        optionFingerprint: "plan-target-options",
+        queuePosition: 1,
+      },
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.activities.some(
+          (activity) => activity.kind === "turn.queued" && activity.turnId === targetTurnId,
+        ),
+      2_000,
+      targetThreadId,
+    );
+
     const sourceThreadBeforeStart = await waitForThread(
       harness.readModel,
       (thread) =>
