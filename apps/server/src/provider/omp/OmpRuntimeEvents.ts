@@ -273,9 +273,14 @@ export function normalizeOmpRpcFrame(
       const providerNativeId = nativeId ?? state.activeMessageNativeId;
       const itemId = nativeId ? state.nativeItemIds.get(nativeId) : state.activeMessageItemId;
       const delta = readString(event?.delta);
-      if (!itemId || delta === undefined) return [];
       const eventType = readString(event?.type);
-      const streamKind = eventType === "thinking_delta" ? "reasoning_text" : "assistant_text";
+      const streamKind =
+        eventType === "text_delta"
+          ? "assistant_text"
+          : eventType === "thinking_delta"
+            ? "reasoning_text"
+            : undefined;
+      if (!itemId || delta === undefined || streamKind === undefined) return [];
       return [
         {
           ...base,

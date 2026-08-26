@@ -308,9 +308,12 @@ function resolveResumePath(
   readonly cursor?: OmpSessionCursor;
   readonly resumePath?: string;
 } {
-  if (value === undefined) return {};
+  // null/undefined and foreign/stale shapes mean "no resume", matching
+  // OpenCode/Grok/Cursor. Hard-failing here bricks threads whose persisted
+  // binding still has a null cursor (lazy OMP session) or a non-OMP shape.
+  if (value === undefined || value === null) return {};
   const cursor = decodeOmpSessionCursor(value);
-  if (!cursor) throw failValidation("startSession", "Invalid OMP resume cursor.");
+  if (!cursor) return {};
   const candidate = NodePath.join(sessionRoot, cursor.sessionKey);
   try {
     return {
@@ -433,6 +436,11 @@ function approvalDecision(decision: ProviderApprovalDecision): string {
       return "approve_once";
     case "acceptForSession":
       return "approve_session";
+    case "acceptAlways":
+      throw failValidation(
+        "respondToRequest",
+        "OMP approvals do not support persistent approval beyond the current session.",
+      );
     case "decline":
       return "deny";
     case "cancel":

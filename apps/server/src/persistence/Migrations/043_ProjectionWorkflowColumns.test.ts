@@ -63,7 +63,7 @@ layer("043_ProjectionWorkflowColumns", (it) => {
           )
       `;
 
-      yield* runMigrations({ toMigrationInclusive: 39 });
+      yield* runMigrations({ toMigrationInclusive: 43 });
 
       const threads = yield* sql<{ readonly workflow: string | null }>`
         SELECT workflow FROM projection_threads WHERE thread_id = 'thread-workflow-backfill'

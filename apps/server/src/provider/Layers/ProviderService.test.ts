@@ -995,6 +995,7 @@ it.effect("persists a promoted OMP queued model selection across recovery", () =
       Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, firstRegistry)),
       Layer.provide(firstDirectoryLayer),
       Layer.provide(defaultServerSettingsLayer),
+      Layer.provide(serverConfigTestLayer),
       Layer.provide(AnalyticsService.layerTest),
       Layer.provide(
         Layer.succeed(
@@ -1067,6 +1068,7 @@ it.effect("persists a promoted OMP queued model selection across recovery", () =
       Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, secondRegistry)),
       Layer.provide(secondDirectoryLayer),
       Layer.provide(defaultServerSettingsLayer),
+      Layer.provide(serverConfigTestLayer),
       Layer.provide(AnalyticsService.layerTest),
       Layer.provide(
         Layer.succeed(
@@ -1134,6 +1136,7 @@ it.effect("publishes runtime events when binding refresh fails", () =>
         Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
         Layer.provide(flakyDirectoryLayer),
         Layer.provide(defaultServerSettingsLayer),
+        Layer.provide(serverConfigTestLayer),
         Layer.provide(AnalyticsService.layerTest),
         Layer.provide(
           Layer.succeed(
@@ -1212,6 +1215,7 @@ it.effect("keeps the existing OMP model when a queued follow-up has no new selec
       Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
       Layer.provide(directoryLayer),
       Layer.provide(defaultServerSettingsLayer),
+      Layer.provide(serverConfigTestLayer),
       Layer.provide(AnalyticsService.layerTest),
       Layer.provide(
         Layer.succeed(
@@ -1312,6 +1316,7 @@ it.effect("clears queued OMP model overrides on turn abort before promotion", ()
       Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
       Layer.provide(directoryLayer),
       Layer.provide(defaultServerSettingsLayer),
+      Layer.provide(serverConfigTestLayer),
       Layer.provide(AnalyticsService.layerTest),
       Layer.provide(
         Layer.succeed(
@@ -1425,6 +1430,7 @@ it.effect("defers interaction-mode projection when the adapter lacks live setInt
       Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
       Layer.provide(directoryLayer),
       Layer.provide(defaultServerSettingsLayer),
+      Layer.provide(serverConfigTestLayer),
       Layer.provide(AnalyticsService.layerTest),
       Layer.provide(
         Layer.succeed(
@@ -1491,6 +1497,7 @@ it.effect(
         Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
         Layer.provide(directoryLayer),
         Layer.provide(defaultServerSettingsLayer),
+        Layer.provide(serverConfigTestLayer),
         Layer.provide(AnalyticsService.layerTest),
         Layer.provide(
           Layer.succeed(

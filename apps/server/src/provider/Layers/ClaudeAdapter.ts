@@ -3936,7 +3936,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           }
           aborted = true;
           pendingUserInputs.delete(requestId);
-          return Deferred.succeed(answersDeferred, {} as ProviderUserInputAnswers).pipe(
+          return Deferred.succeed(answersDeferred, {} as ClaudeUserInputAnswers).pipe(
             Effect.ignore,
           );
         });

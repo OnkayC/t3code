@@ -131,6 +131,26 @@ describe("OmpRuntimeEvents", () => {
     });
   });
 
+  it("does not project streamed tool-call arguments as assistant text", () => {
+    const normalizer = makeNormalizer();
+    normalizer.map({
+      type: "message_start",
+      message: { role: "assistant" },
+    });
+
+    const events = normalizer.map({
+      type: "message_update",
+      message: { role: "assistant" },
+      assistantMessageEvent: {
+        type: "toolcall_delta",
+        contentIndex: 0,
+        delta: '{"command":"rm -rf .terraform"}',
+      },
+    });
+
+    expect(events).toEqual([]);
+  });
+
   it("normalizes structured approvals with exact public decisions and redacted raw payload", () => {
     const [event] = makeNormalizer().map({
       type: "approval_request",
@@ -771,7 +791,7 @@ describe("OmpRuntimeEvents", () => {
     expect(serialized).not.toContain(huge);
   });
 
-  it("bounds large tool intent before activity persistence", () => {
+  it("omits streamed tool intent from persisted activities", () => {
     const normalizer = makeNormalizer();
     const huge = "i".repeat(80_000);
     const [event] = normalizer.map({
@@ -783,17 +803,14 @@ describe("OmpRuntimeEvents", () => {
     if (!event) throw new Error("expected tool update");
     const [activity] = runtimeEventToActivities(event);
     const serialized = JSON.stringify(activity?.payload);
-    expect(serialized.length).toBeLessThan(40_000);
     expect(activity?.payload).toMatchObject({
       data: {
-        intent: {
-          truncated: true,
-          originalLength: expect.any(Number),
-          summary: expect.stringContaining("truncated"),
-          tail: expect.any(String),
-        },
+        toolCallId: "tool-huge-intent",
       },
     });
+    expect(
+      (activity?.payload as { data?: Record<string, unknown> } | undefined)?.data,
+    ).not.toHaveProperty("intent");
     expect(serialized).not.toContain(huge);
   });
 
