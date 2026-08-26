@@ -118,6 +118,7 @@ An empty database is a bad test. Seed your worktree's `.t3` with a copy of real 
 - Upload PR evidence to GitHub. Never commit PR-only screenshots or assets such as `.github/pr-assets/`.
 - One concern per PR. If the description says "also", split it.
 - When babysitting: poll checks and comments newer than the last push, verify each bot finding against the source, fix real ones, dismiss false positives with a written reason. Stay quiet when nothing is new. Stop when the bots are green on the latest commit.
+- Codex review auto-starts on each new commit push. Never post `@codex review` (or similar manual review triggers); push the commit and wait for the automatic review.
 
 ## Plans and work artifacts
 

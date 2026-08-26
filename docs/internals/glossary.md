@@ -94,11 +94,15 @@ The live backend agent implementation and its event stream. The main service is 
 
 #### Provider
 
-The backend agent runtime that actually performs work. Five drivers ship built in: Codex, Claude, Cursor, Grok, and OpenCode. See [ProviderService.ts][14], [ProviderAdapter.ts][15], and [CodexAdapter.ts][17] as a representative adapter.
+The backend agent runtime that actually performs work. Six drivers ship built in: Codex, Claude, Cursor, Grok, OMP, and OpenCode. See [ProviderService.ts][14], [ProviderAdapter.ts][15], and [CodexAdapter.ts][17] as a representative adapter.
 
 #### Session
 
 The live provider-backed runtime attached to a thread. Session shape is in [the orchestration contracts][1], and lifecycle is managed in [ProviderService.ts][14].
+
+#### Host turn
+
+An OMP-native durable boundary that correlates one T3 turn with OMP session history. T3 uses host-turn IDs to resume a thread and to validate checkpoint rollback against the exact history suffix before OMP mutates its session. See [providers.md][16].
 
 #### Runtime mode
 
