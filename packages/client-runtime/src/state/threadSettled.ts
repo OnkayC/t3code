@@ -147,11 +147,18 @@ export function hasQueuedTurnStart(
 export function canSettle(
   shell: Pick<
     OrchestrationThreadShell,
-    "hasPendingApprovals" | "hasPendingUserInput" | "session" | "latestUserMessageAt" | "latestTurn"
+    | "hasPendingApprovals"
+    | "hasPendingUserInput"
+    | "hasPendingPlanReview"
+    | "session"
+    | "latestUserMessageAt"
+    | "latestTurn"
   >,
   options: { readonly now: string },
 ): boolean {
-  if (shell.hasPendingApprovals || shell.hasPendingUserInput) return false;
+  if (shell.hasPendingApprovals || shell.hasPendingUserInput || shell.hasPendingPlanReview) {
+    return false;
+  }
   if (shell.session?.status === "starting" || shell.session?.status === "running") return false;
   // Queued work is as blocked-on-progress as a live session: settling it
   // (or auto-settling it on a closed PR) would hide a just-requested turn.
@@ -171,21 +178,24 @@ export type ThreadSnoozeShell = Pick<
   | "snoozedAt"
   | "hasPendingApprovals"
   | "hasPendingUserInput"
+  | "hasPendingPlanReview"
   | "session"
   | "latestTurn"
 >;
 
 /**
  * A snoozed thread "raises its hand" when something happens that outranks
- * the user's snooze: the agent is blocked on them (approval / user input),
- * the session failed, or a run completed after the snooze was set — the
- * v1 taste of event-based snooze ("something happened" wakes early).
+ * the user's snooze: the agent is blocked on them (approval / user input /
+ * plan review), the session failed, or a run completed after the snooze was
+ * set — the v1 taste of event-based snooze ("something happened" wakes early).
  * Raising a hand never clears the server-side snooze fields; it only stops
  * the thread from CLASSIFYING as snoozed, exactly like blocked work and
  * effectiveSettled.
  */
 export function threadRaisedHandWhileSnoozed(shell: ThreadSnoozeShell): boolean {
-  if (shell.hasPendingApprovals || shell.hasPendingUserInput) return true;
+  if (shell.hasPendingApprovals || shell.hasPendingUserInput || shell.hasPendingPlanReview) {
+    return true;
+  }
   // Only a FRESH failure raises the hand: a thread snoozed while already
   // failed stays snoozed — that snooze was the user saying "I saw it, not
   // now". session.updatedAt stamps the status edge, so an error newer than
@@ -218,11 +228,18 @@ export function threadRaisedHandWhileSnoozed(shell: ThreadSnoozeShell): boolean 
 export function canSnooze(
   shell: Pick<
     OrchestrationThreadShell,
-    "hasPendingApprovals" | "hasPendingUserInput" | "latestUserMessageAt" | "latestTurn" | "session"
+    | "hasPendingApprovals"
+    | "hasPendingUserInput"
+    | "hasPendingPlanReview"
+    | "latestUserMessageAt"
+    | "latestTurn"
+    | "session"
   >,
   options: { readonly now: string },
 ): boolean {
-  if (shell.hasPendingApprovals || shell.hasPendingUserInput) return false;
+  if (shell.hasPendingApprovals || shell.hasPendingUserInput || shell.hasPendingPlanReview) {
+    return false;
+  }
   if (hasQueuedTurnStart(shell, options)) return false;
   return true;
 }
@@ -307,7 +324,9 @@ export function effectiveSettled(
   },
 ): boolean {
   // Blocked work must remain visible even when a user explicitly settled it.
-  if (shell.hasPendingApprovals || shell.hasPendingUserInput) return false;
+  if (shell.hasPendingApprovals || shell.hasPendingUserInput || shell.hasPendingPlanReview) {
+    return false;
+  }
   if (shell.session?.status === "starting" || shell.session?.status === "running") return false;
   if (hasQueuedTurnStart(shell, { now: options.now })) {
     // The queued-turn blocker alone is forgivable: it is clock-derived, and

@@ -2953,8 +2953,11 @@ describe("ProviderCommandReactor", () => {
         commandId: CommandId.make("cmd-user-input-respond"),
         threadId: ThreadId.make("thread-1"),
         requestId: asApprovalRequestId("user-input-request-1"),
-        answers: {
-          sandbox_mode: "workspace-write",
+        response: {
+          kind: "submit",
+          answers: {
+            sandbox_mode: { selectedOptions: ["workspace-write"] },
+          },
         },
         createdAt: now,
       }),
@@ -2964,8 +2967,11 @@ describe("ProviderCommandReactor", () => {
     expect(harness.respondToUserInput.mock.calls[0]?.[0]).toEqual({
       threadId: "thread-1",
       requestId: "user-input-request-1",
-      answers: {
-        sandbox_mode: "workspace-write",
+      response: {
+        kind: "submit",
+        answers: {
+          sandbox_mode: { selectedOptions: ["workspace-write"] },
+        },
       },
     });
   });
@@ -3135,8 +3141,11 @@ describe("ProviderCommandReactor", () => {
         commandId: CommandId.make("cmd-user-input-respond-stale"),
         threadId: ThreadId.make("thread-1"),
         requestId: asApprovalRequestId("user-input-request-1"),
-        answers: {
-          sandbox_mode: "workspace-write",
+        response: {
+          kind: "submit",
+          answers: {
+            sandbox_mode: { selectedOptions: ["workspace-write"] },
+          },
         },
         createdAt: now,
       }),

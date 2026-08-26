@@ -1,4 +1,6 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
   ApprovalRequestId,
@@ -16,9 +18,14 @@ import {
   ProviderApprovalDecision,
   ProviderApprovalPolicy,
   ProviderInteractionMode,
+  ProviderPlanReviewDecision,
+  ProviderPlanWorkflow,
   ProviderRequestKind,
   ProviderSandboxMode,
-  ProviderUserInputAnswers,
+  ProviderTurnDeliveryMode,
+  ProviderUserInputResponse,
+  decodeProviderUserInputResponse,
+  normalizeProviderUserInputResponse,
   RuntimeMode,
 } from "./orchestration.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
@@ -75,6 +82,8 @@ export const ProviderSendTurnInput = Schema.Struct({
   ),
   modelSelection: Schema.optional(ModelSelection),
   interactionMode: Schema.optional(ProviderInteractionMode),
+  workflow: Schema.optional(ProviderPlanWorkflow),
+  deliveryMode: Schema.optional(ProviderTurnDeliveryMode),
 });
 export type ProviderSendTurnInput = typeof ProviderSendTurnInput.Type;
 
@@ -82,6 +91,8 @@ export const ProviderTurnStartResult = Schema.Struct({
   threadId: ThreadId,
   turnId: TurnId,
   resumeCursor: Schema.optional(Schema.Unknown),
+  /** True when the adapter queued the turn instead of starting it immediately. */
+  queued: Schema.optional(Schema.Boolean),
 });
 export type ProviderTurnStartResult = typeof ProviderTurnStartResult.Type;
 
@@ -103,11 +114,43 @@ export const ProviderRespondToRequestInput = Schema.Struct({
 });
 export type ProviderRespondToRequestInput = typeof ProviderRespondToRequestInput.Type;
 
-export const ProviderRespondToUserInputInput = Schema.Struct({
+const ProviderRespondToUserInputInputTarget = Schema.Struct({
   threadId: ThreadId,
   requestId: ApprovalRequestId,
-  answers: ProviderUserInputAnswers,
+  response: ProviderUserInputResponse,
 });
+
+const ProviderRespondToUserInputInputSource = Schema.Struct({
+  threadId: ThreadId,
+  requestId: ApprovalRequestId,
+  response: Schema.optional(Schema.Unknown),
+  answers: Schema.optional(Schema.Unknown),
+});
+
+export const ProviderRespondToUserInputInput = ProviderRespondToUserInputInputSource.pipe(
+  Schema.decodeTo(
+    ProviderRespondToUserInputInputTarget,
+    SchemaTransformation.transformOrFail<
+      typeof ProviderRespondToUserInputInputTarget.Encoded,
+      typeof ProviderRespondToUserInputInputSource.Type
+    >({
+      decode: (raw) =>
+        decodeProviderUserInputResponse(normalizeProviderUserInputResponse(raw)).pipe(
+          Effect.map((response) => ({
+            threadId: raw.threadId,
+            requestId: raw.requestId,
+            response,
+          })),
+        ),
+      encode: (value) =>
+        Effect.succeed({
+          threadId: ThreadId.make(value.threadId),
+          requestId: ApprovalRequestId.make(value.requestId),
+          response: value.response,
+        }),
+    }),
+  ),
+);
 export type ProviderRespondToUserInputInput = typeof ProviderRespondToUserInputInput.Type;
 
 export const ProviderUploadFeedbackInput = Schema.Struct({
@@ -132,6 +175,19 @@ export class ProviderUploadFeedbackError extends Schema.TaggedErrorClass<Provide
     return `Failed to upload feedback for thread ${this.threadId}.`;
   }
 }
+export const ProviderRespondToPlanReviewInput = Schema.Struct({
+  threadId: ThreadId,
+  requestId: ApprovalRequestId,
+  decision: ProviderPlanReviewDecision,
+});
+export type ProviderRespondToPlanReviewInput = typeof ProviderRespondToPlanReviewInput.Type;
+
+export const ProviderSetInteractionModeInput = Schema.Struct({
+  threadId: ThreadId,
+  interactionMode: ProviderInteractionMode,
+  workflow: Schema.optional(ProviderPlanWorkflow),
+});
+export type ProviderSetInteractionModeInput = typeof ProviderSetInteractionModeInput.Type;
 
 const ProviderEventKind = Schema.Literals(["session", "notification", "request", "error"]);
 

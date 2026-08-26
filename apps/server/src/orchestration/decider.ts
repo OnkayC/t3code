@@ -926,6 +926,31 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.interaction-mode.apply": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        causationEventId: command.causationEventId,
+        correlationId: command.requestCommandId,
+        type: "thread.interaction-mode-set",
+        payload: {
+          threadId: command.threadId,
+          interactionMode: command.interactionMode,
+          ...(command.workflow !== undefined ? { workflow: command.workflow } : {}),
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
     case "thread.turn.start": {
       const targetThread = yield* requireThread({
         readModel,
@@ -1107,7 +1132,33 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           requestId: command.requestId,
-          answers: command.answers,
+          response: command.response,
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.plan-review.respond": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+          metadata: {
+            requestId: command.requestId,
+          },
+        })),
+        type: "thread.plan-review-response-requested",
+        payload: {
+          threadId: command.threadId,
+          requestId: command.requestId,
+          decision: command.decision,
           createdAt: command.createdAt,
         },
       };

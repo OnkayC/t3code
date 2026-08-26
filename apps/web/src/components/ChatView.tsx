@@ -8,6 +8,7 @@ import {
   type ProjectScript,
   type ProjectId,
   type ProviderApprovalDecision,
+  type ProviderUserInputAnswer,
   type PreviewAnnotationPayload,
   ProviderInstanceId,
   type ServerProvider,
@@ -6046,7 +6047,7 @@ function ChatViewContent(props: ChatViewProps) {
   );
 
   const onRespondToUserInput = useCallback(
-    async (requestId: ApprovalRequestId, answers: Record<string, unknown>) => {
+    async (requestId: ApprovalRequestId, answers: Record<string, ProviderUserInputAnswer>) => {
       if (!activeThreadId) return;
 
       setRespondingUserInputRequestIds((existing) =>
@@ -6057,7 +6058,7 @@ function ChatViewContent(props: ChatViewProps) {
         input: {
           threadId: activeThreadId,
           requestId,
-          answers,
+          response: { kind: "submit", answers },
         },
       });
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {

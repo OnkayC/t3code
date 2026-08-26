@@ -347,7 +347,9 @@ function mapPermissionToRequestType(
   }
 }
 
-function mapPermissionDecision(reply: "once" | "always" | "reject"): string {
+function mapPermissionDecision(
+  reply: "once" | "always" | "reject",
+): "accept" | "acceptForSession" | "decline" {
   switch (reply) {
     case "once":
       return "accept";
